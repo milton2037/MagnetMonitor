@@ -1,0 +1,255 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Monitor de Campo Magnético</title>
+  <link rel="stylesheet" href="style.css" />
+  <!-- Chart.js via CDN -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
+</head>
+<body>
+
+<!-- ══════════════ HEADER ══════════════ -->
+<header>
+  <div class="logo">
+    <span class="logo-icon">🧲</span>
+    <div>
+      <h1>MagnetMonitor</h1>
+      <p class="subtitle">Monitor & Calculadora de Campos Magnéticos</p>
+    </div>
+  </div>
+  <div class="status-bar">
+    <div class="status-dot" id="status-dot"></div>
+    <span id="status-label">Simulando…</span>
+    <select id="sensor-filter" class="btn btn-sm" style="display:none">
+      <option value="all">Todos los sensores</option>
+    </select>
+    <button id="toggle-sim-btn" class="btn btn-sm">⏸ Pausar</button>
+  </div>
+</header>
+
+<!-- ══════════════ MAIN GRID ══════════════ -->
+<main>
+
+  <!-- ─── Tarjetas de métricas ─── -->
+  <section class="metrics-row">
+    <div class="metric-card" id="card-current">
+      <div class="metric-icon">📡</div>
+      <div class="metric-info">
+        <span class="metric-label">Lectura actual</span>
+        <span class="metric-value" id="val-current">— T</span>
+      </div>
+    </div>
+    <div class="metric-card">
+      <div class="metric-icon">📈</div>
+      <div class="metric-info">
+        <span class="metric-label">Máximo</span>
+        <span class="metric-value" id="val-max">— T</span>
+      </div>
+    </div>
+    <div class="metric-card">
+      <div class="metric-icon">📉</div>
+      <div class="metric-info">
+        <span class="metric-label">Mínimo</span>
+        <span class="metric-value" id="val-min">— T</span>
+      </div>
+    </div>
+    <div class="metric-card">
+      <div class="metric-icon">⚡</div>
+      <div class="metric-info">
+        <span class="metric-label">Promedio</span>
+        <span class="metric-value" id="val-avg">— T</span>
+      </div>
+    </div>
+  </section>
+
+  <!-- ─── Gráfico en tiempo real ─── -->
+  <section class="card chart-section">
+    <div class="card-header">
+      <h2>📊 Monitoreo en tiempo real</h2>
+      <div class="chart-controls">
+        <label>Ventana:
+          <select id="window-select">
+            <option value="30">30 s</option>
+            <option value="60" selected>60 s</option>
+            <option value="120">120 s</option>
+          </select>
+        </label>
+        <button class="btn btn-sm btn-danger" id="clear-chart-btn">🗑 Limpiar</button>
+        <button class="btn btn-sm btn-success" id="export-csv-btn">⬇ CSV</button>
+      </div>
+    </div>
+    <div class="gauge-row">
+      <div class="gauge-wrap">
+        <canvas id="gauge-canvas" width="160" height="90"></canvas>
+        <span class="gauge-label" id="gauge-label">0 µT</span>
+      </div>
+      <canvas id="main-chart"></canvas>
+    </div>
+  </section>
+
+  <!-- ─── Dos columnas: Calculadora + Historial ─── -->
+  <div class="two-col">
+
+    <!-- CALCULADORA -->
+    <section class="card">
+      <div class="card-header"><h2>🔬 Calculadora Electromagnética</h2></div>
+
+      <!-- Tabs -->
+      <div class="tabs" id="law-tabs">
+        <button class="tab active" data-law="biot-savart">Biot‑Savart</button>
+        <button class="tab" data-law="ampere">Ampère</button>
+        <button class="tab" data-law="solenoid">Solenoide</button>
+        <button class="tab" data-law="toroid">Toroide</button>
+        <button class="tab" data-law="faraday">Faraday</button>
+        <button class="tab" data-law="lorentz">Lorentz</button>
+      </div>
+
+      <!-- Paneles de cada ley -->
+      <div id="panels">
+
+        <!-- Biot-Savart -->
+        <div class="panel active" id="panel-biot-savart">
+          <p class="formula">$$B = \frac{\mu_0 I R^2}{2(R^2+x^2)^{3/2}}$$</p>
+          <p class="law-desc">Campo axial de un lazo circular de radio <em>R</em> a distancia <em>x</em> del centro.</p>
+          <div class="fields">
+            <label>Corriente I (A) <input type="number" id="bs-I" value="5" step="any"/></label>
+            <label>Radio del lazo R (m) <input type="number" id="bs-R" value="0.1" step="any"/></label>
+            <label>Posición axial x (m) <input type="number" id="bs-x" value="0" step="any"/></label>
+          </div>
+        </div>
+
+        <!-- Ampère -->
+        <div class="panel" id="panel-ampere">
+          <p class="formula">$$B = \frac{\mu_0 I}{2\pi r}$$</p>
+          <p class="law-desc">Campo a distancia <em>r</em> de un conductor recto infinito.</p>
+          <div class="fields">
+            <label>Corriente I (A) <input type="number" id="amp-I" value="10" step="any"/></label>
+            <label>Distancia r (m) <input type="number" id="amp-r" value="0.05" step="any"/></label>
+          </div>
+        </div>
+
+        <!-- Solenoide -->
+        <div class="panel" id="panel-solenoid">
+          <p class="formula">$$B = \mu_0 \frac{N}{L} I$$</p>
+          <p class="law-desc">Campo uniforme en el interior de una solenoide ideal.</p>
+          <div class="fields">
+            <label>Vueltas N <input type="number" id="sol-N" value="200" step="1"/></label>
+            <label>Longitud L (m) <input type="number" id="sol-L" value="0.3" step="any"/></label>
+            <label>Corriente I (A) <input type="number" id="sol-I" value="2" step="any"/></label>
+          </div>
+        </div>
+
+        <!-- Toroide -->
+        <div class="panel" id="panel-toroid">
+          <p class="formula">$$B = \frac{\mu_0 N I}{2\pi r}$$</p>
+          <p class="law-desc">Campo en el interior de un toroide de N vueltas a radio <em>r</em>.</p>
+          <div class="fields">
+            <label>Vueltas N <input type="number" id="tor-N" value="300" step="1"/></label>
+            <label>Radio interior r (m) <input type="number" id="tor-r" value="0.05" step="any"/></label>
+            <label>Corriente I (A) <input type="number" id="tor-I" value="3" step="any"/></label>
+          </div>
+        </div>
+
+        <!-- Faraday -->
+        <div class="panel" id="panel-faraday">
+          <p class="formula">$$\mathcal{E} = -N\frac{\Delta\Phi}{\Delta t}, \quad \Phi = B \cdot A \cdot \cos\theta$$</p>
+          <p class="law-desc">Fuerza electromotriz inducida por variación del flujo magnético.</p>
+          <div class="fields">
+            <label>Campo B (T) <input type="number" id="far-B" value="0.001" step="any"/></label>
+            <label>Área A (m²) <input type="number" id="far-A" value="0.01" step="any"/></label>
+            <label>Ángulo θ (°) <input type="number" id="far-theta" value="0" step="any"/></label>
+            <label>Vueltas N <input type="number" id="far-N" value="100" step="1"/></label>
+            <label>Intervalo Δt (s) <input type="number" id="far-dt" value="0.01" step="any"/></label>
+            <label>ΔB (T) <input type="number" id="far-dB" value="0.0005" step="any"/></label>
+          </div>
+        </div>
+
+        <!-- Lorentz -->
+        <div class="panel" id="panel-lorentz">
+          <p class="formula">$$\vec{F} = q(\vec{v} \times \vec{B}), \quad |F| = qvB\sin\theta$$</p>
+          <p class="law-desc">Fuerza de Lorentz sobre una carga en movimiento.</p>
+          <div class="fields">
+            <label>Carga q (C) <input type="number" id="lor-q" value="1.6e-19" step="any"/></label>
+            <label>Velocidad v (m/s) <input type="number" id="lor-v" value="1e6" step="any"/></label>
+            <label>Campo B (T) <input type="number" id="lor-B" value="0.001" step="any"/></label>
+            <label>Ángulo θ (°) <input type="number" id="lor-theta" value="90" step="any"/></label>
+          </div>
+        </div>
+
+      </div><!-- /panels -->
+
+      <button class="btn btn-primary full-width" id="calc-btn">⚡ Calcular</button>
+
+      <!-- Resultado -->
+      <div class="result-box" id="result-box">
+        <div class="result-title" id="result-title">Resultado</div>
+        <div class="result-value" id="result-value">—</div>
+        <div class="result-detail" id="result-detail"></div>
+      </div>
+    </section>
+
+    <!-- HISTORIAL -->
+    <section class="card">
+      <div class="card-header">
+        <h2>🗒 Historial de lecturas</h2>
+        <button class="btn btn-sm btn-danger" id="clear-log-btn">🗑 Vaciar</button>
+      </div>
+      <div class="log-search-wrap">
+        <input type="text" id="log-search" placeholder="🔍 Filtrar lecturas…" />
+      </div>
+      <div class="log-container" id="log-container">
+        <table id="log-table">
+          <thead>
+            <tr>
+              <th>#</th><th>Sensor</th><th>Hora</th><th>Campo (T)</th><th>µT</th><th>Nivel</th>
+            </tr>
+          </thead>
+          <tbody id="log-body"></tbody>
+        </table>
+      </div>
+    </section>
+
+  </div><!-- /two-col -->
+
+  <!-- ─── Referencia de leyes ─── -->
+  <section class="card ref-section">
+    <div class="card-header"><h2>📚 Referencia de leyes electromagnéticas</h2></div>
+    <div class="ref-grid">
+      <div class="ref-card">
+        <h3>Ley de Biot‑Savart</h3>
+        <p>Describe el campo magnético generado por un elemento de corriente diferencial <em>Id**l**</em>. Base del cálculo exacto de campos en geometrías complejas.</p>
+      </div>
+      <div class="ref-card">
+        <h3>Ley de Ampère</h3>
+        <p>La integral de <strong>B</strong> a lo largo de un lazo cerrado es proporcional a la corriente que atraviesa la superficie. Simplifica el cálculo en geometrías simétricas.</p>
+      </div>
+      <div class="ref-card">
+        <h3>Ley de Faraday</h3>
+        <p>Una variación del flujo magnético induce una fuerza electromotriz proporcional a la tasa de cambio. Principio de los generadores eléctricos y transformadores.</p>
+      </div>
+      <div class="ref-card">
+        <h3>Fuerza de Lorentz</h3>
+        <p>Una carga <em>q</em> moviéndose a velocidad <strong>v</strong> en un campo <strong>B</strong> experimenta una fuerza perpendicular a ambos vectores.</p>
+      </div>
+      <div class="ref-card">
+        <h3>Solenoide ideal</h3>
+        <p>Campo uniforme y confinado en su interior: B = µ₀·(N/L)·I. Componente central de electroimanes, inductores y aparatos de RM.</p>
+      </div>
+      <div class="ref-card">
+        <h3>Toroide</h3>
+        <p>Variante del solenoide curvado en anillo. El campo es nulo en el exterior; en el interior sigue la misma expresión que Ampère para un lazo cerrado.</p>
+      </div>
+    </div>
+  </section>
+
+</main>
+
+<footer>
+  <span>MagnetMonitor v2.0 · µ₀ = 4π × 10⁻⁷ T·m/A</span>
+</footer>
+
+<script src="script.js"></script>
+</body>
+</html>
