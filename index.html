@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Monitor de Campo Magnético</title>
-  <link rel="stylesheet" href="style.css" />
+  <link rel="stylesheet" href="style.css?v=3.0" />
   <!-- Chart.js via CDN -->
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
 </head>
@@ -20,13 +20,13 @@
     </div>
   </div>
   <div class="status-bar">
-    <div class="status-dot" id="status-dot"></div>
-    <span id="status-label">Simulando…</span>
+    <div class="status-dot paused" id="status-dot"></div>
+    <span id="status-label">En espera...</span>
     <select id="sensor-filter" class="btn btn-sm" style="display:none">
       <option value="all">Todos los sensores</option>
     </select>
-    <button id="toggle-sim-btn" class="btn btn-sm">⏸ Pausar</button>
-    <button id="btn-open-diag" class="btn btn-sm btn-outline">🛠️ Diagnóstico</button>
+    <button id="toggle-sim-btn" class="btn btn-sm btn-outline">▶ Simular</button>
+    <button id="btn-open-diag" class="btn btn-sm btn-primary">🛠️ Diagnóstico</button>
   </div>
 </header>
 
@@ -386,6 +386,6 @@
 
 <div id="toast-container" class="toast-container"></div>
 
-<script src="script.js"></script>
+<script src="script.js?v=3.0"></script>
 </body>
 </html>

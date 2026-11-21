@@ -4,10 +4,18 @@
 //                   diagnóstico y manejo de errores
 // ══════════════════════════════════════════════
 
-define('DB_HOST', 'sql309.infinityfree.com'); // cambia al host de tu panel
-define('DB_NAME', 'if0_43469375_magnet');      // nombre de la base de datos
-define('DB_USER', 'if0_43469375');             // usuario MySQL
-define('DB_PASS', 'TU_PASSWORD_AQUI');         // contraseña MySQL
+// 1. Servidor MySQL asignado por InfinityFree (Panel -> MySQL Details -> MySQL Hostname)
+// Ejemplos comunes: sql105.infinityfree.com, sql202.infinityfree.com, sql309.infinityfree.com
+define('DB_HOST', 'sql309.infinityfree.com'); // ← Cambia si tu panel muestra otro hostname
+
+// 2. Nombre de tu base de datos (según tu panel de InfinityFree)
+define('DB_NAME', 'if0_43494190_magnet');
+
+// 3. Usuario de tu cuenta de InfinityFree
+define('DB_USER', 'if0_43494190');
+
+// 4. Contraseña de tu cuenta de InfinityFree (la misma de vPanel / FTP)
+define('DB_PASS', 'TU_PASSWORD_AQUI');
 
 /**
  * Obtiene la conexión PDO a MySQL con manejo explícito de errores
@@ -19,9 +27,9 @@ function getDB(): PDO {
     if ($pdo !== null) return $pdo;
 
     // Validación preventiva de configuración
-    if (DB_PASS === 'TU_PASSWORD_AQUI' || empty(DB_PASS)) {
+    if (DB_PASS === 'TU_PASSWORD_AQUI' || trim(DB_PASS) === '') {
         throw new PDOException(
-            "La contraseña de base de datos no está configurada en config/db.php. Reemplaza 'TU_PASSWORD_AQUI' por tu contraseña real del panel de hosting.",
+            "La contraseña de MySQL no está configurada en config/db.php. Debes reemplazar 'TU_PASSWORD_AQUI' por la contraseña de tu cuenta de InfinityFree (la misma que usas para el panel de control o FTP).",
             1045
         );
     }
@@ -33,20 +41,19 @@ function getDB(): PDO {
             PDO::ATTR_ERRMODE            => PDO::ERRMODE_EXCEPTION,
             PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
             PDO::ATTR_EMULATE_PREPARES   => false,
-            PDO::ATTR_TIMEOUT            => 5, // 5 segundos de timeout
+            PDO::ATTR_TIMEOUT            => 5,
         ]);
         return $pdo;
     } catch (PDOException $e) {
         $code = (int)$e->getCode();
         $msg  = $e->getMessage();
 
-        // Diagnóstico amigable según el código de error MySQL
         if ($code === 1045 || str_contains($msg, 'Access denied')) {
-            $friendly = "Acceso denegado a MySQL para el usuario '" . DB_USER . "'. Verifica DB_USER y DB_PASS en config/db.php.";
+            $friendly = "Acceso denegado a MySQL para el usuario '" . DB_USER . "'. Verifica DB_PASS en config/db.php (debe ser la contraseña de tu cuenta de InfinityFree).";
         } elseif ($code === 1049 || str_contains($msg, 'Unknown database')) {
-            $friendly = "La base de datos '" . DB_NAME . "' no existe en el servidor '" . DB_HOST . "'. Créala en el panel de control de tu hosting.";
+            $friendly = "La base de datos '" . DB_NAME . "' no existe en '" . DB_HOST . "'. Verifica el nombre en tu panel de InfinityFree.";
         } elseif ($code === 2002 || str_contains($msg, 'Connection refused') || str_contains($msg, 'timed out')) {
-            $friendly = "No se pudo contactar el host MySQL '" . DB_HOST . "'. Verifica el nombre del servidor en tu panel de hosting.";
+            $friendly = "No se pudo contactar al servidor MySQL '" . DB_HOST . "'. Ve a tu panel de InfinityFree -> 'MySQL Details' y copia el 'MySQL Hostname' exacto asignado a tu cuenta.";
         } else {
             $friendly = "Error de conexión a MySQL: " . $msg;
         }

@@ -41,8 +41,13 @@ let lastReadingId  = 0;
 // ═══════════════════════════════════════════════════════════════════
 
 function showToast(message, type = 'info', duration = 4500) {
-  const container = document.getElementById('toast-container');
-  if (!container) return;
+  let container = document.getElementById('toast-container');
+  if (!container) {
+    container = document.createElement('div');
+    container.id = 'toast-container';
+    container.className = 'toast-container';
+    document.body.appendChild(container);
+  }
 
   const toast = document.createElement('div');
   toast.className = `toast toast-${type}`;
@@ -364,9 +369,10 @@ async function loadInitialReadings() {
       stopSim();
     }
   } catch (err) {
-    logConnection('error', 'No se pudo conectar con el backend PHP / MySQL', err.message);
-    setStatus(true, 'Simulando (sin backend)', false);
-    startSim();
+    logConnection('error', 'Fallo al conectar con el servidor PHP / MySQL', err.message);
+    setStatus(false, 'Sin conexión / Error MySQL', true);
+    showToast(`Error de conexión con el servidor: ${err.message}`, 'error', 8000);
+    // Simulación apagada por defecto para no saturar al usuario
   }
 }
 
@@ -427,33 +433,30 @@ function startSim() {
   if (simRunning) return;
   simInterval = setInterval(() => ingestReading(simulateReading()), 1000);
   simRunning  = true;
-  setStatus(true, 'Simulando…', false);
-  document.getElementById('toggle-sim-btn').textContent = '⏸ Pausar';
-}
-function stopSim() {
-  clearInterval(simInterval);
-  simInterval = null;
-  simRunning  = false;
-  setStatus(false, 'Pausado', true);
-  document.getElementById('toggle-sim-btn').textContent = '▶ Reanudar';
+  setStatus(true, 'Simulación activa', false);
+  const btn = document.getElementById('toggle-sim-btn');
+  if (btn) btn.textContent = '⏹ Detener Simulación';
+  showToast('Simulación manual iniciada.', 'info', 3000);
+  logConnection('info', 'Simulador manual de campo magnético activado.');
 }
 
-document.getElementById('toggle-sim-btn').addEventListener('click', () => {
-  if (useRealData) {
-    if (pollInterval) {
-      stopPolling();
-      setStatus(false, 'Pausado', true);
-      document.getElementById('toggle-sim-btn').textContent = '▶ Reanudar';
-      logConnection('info', 'Monitoreo pausado por el usuario.');
-    } else {
-      startPolling();
-      setStatus(true, 'En vivo · Servidor Conectado', false);
-      document.getElementById('toggle-sim-btn').textContent = '⏸ Pausar';
-      logConnection('info', 'Monitoreo reanudado.');
-    }
-    return;
+function stopSim() {
+  if (simInterval) clearInterval(simInterval);
+  simInterval = null;
+  simRunning  = false;
+  setStatus(false, 'En espera', true);
+  const btn = document.getElementById('toggle-sim-btn');
+  if (btn) btn.textContent = '▶ Simular';
+  logConnection('info', 'Simulador manual detenido.');
+}
+
+document.getElementById('toggle-sim-btn')?.addEventListener('click', () => {
+  if (simRunning) {
+    stopSim();
+    showToast('Simulación manual detenida.', 'info', 2500);
+  } else {
+    startSim();
   }
-  simRunning ? stopSim() : startSim();
 });
 
 // ═══════════════════════════════════════════════════════════════════
@@ -528,6 +531,7 @@ function applyFilter() {
  * Ejecuta el diagnóstico integral contra api/diagnostics.php
  */
 async function runDiagnostics() {
+  showToast('🩺 Comprobando servidor PHP y base de datos MySQL...', 'info', 3000);
   logConnection('info', 'Iniciando diagnóstico completo del servidor...');
   const t0 = performance.now();
 
@@ -691,6 +695,7 @@ async function sendTestReading() {
   badge.className   = 'badge';
   payloadEl.textContent = 'Esperando respuesta del servidor...';
 
+  showToast(`🚀 Enviando lectura de prueba para '${sensorId}'...`, 'info', 2500);
   logConnection('info', `Enviando lectura de prueba para '${sensorId}' a api/readings...`);
   const t0 = performance.now();
 
@@ -877,9 +882,8 @@ document.getElementById('calc-btn').addEventListener('click', () => {
 //  INICIALIZACIÓN
 // ═══════════════════════════════════════════════════════════════════
 drawGauge(0);
-// 1. Iniciar simulación temporal como visualizador inmediato
-startSim();
-// 2. Intentar cargar datos reales desde MySQL; si responde, apaga la simulación
+setStatus(false, 'En espera del servidor...', true);
+// 1. Cargar datos reales desde MySQL (sin simulación automática)
 loadInitialReadings();
-// 3. Ejecutar diagnóstico de conectividad inicial silencioso en segundo plano
-setTimeout(runDiagnostics, 800);
+// 2. Ejecutar diagnóstico de conectividad inicial
+setTimeout(runDiagnostics, 500);

@@ -114,6 +114,7 @@ $isHealthy = $report['database']['connected'] &&
              $report['tables']['sensors']['exists'] &&
              $report['tables']['readings']['exists'];
 
-json_ok($report, $isHealthy ? 200 : 503, [
+// Enviar siempre 200 para que los proxies de hosting compartido no oculten el JSON de diagnóstico
+json_ok($report, 200, [
     'status' => $isHealthy ? 'HEALTHY' : 'NEEDS_ATTENTION'
 ]);
