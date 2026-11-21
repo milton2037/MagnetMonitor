@@ -26,6 +26,7 @@
       <option value="all">Todos los sensores</option>
     </select>
     <button id="toggle-sim-btn" class="btn btn-sm">⏸ Pausar</button>
+    <button id="btn-open-diag" class="btn btn-sm btn-outline">🛠️ Diagnóstico</button>
   </div>
 </header>
 
@@ -213,6 +214,139 @@
 
   </div><!-- /two-col -->
 
+  <!-- ══════════════ PANEL DE PRUEBAS Y DIAGNÓSTICO ══════════════ -->
+  <section class="card diag-section" id="diag-section">
+    <div class="card-header">
+      <div>
+        <h2>🛠️ Panel de Pruebas & Diagnóstico del Servidor</h2>
+        <p class="diag-subtitle">Comprueba la conectividad con el servidor PHP, MySQL y simula envíos del ESP32 en vivo.</p>
+      </div>
+      <div class="diag-header-actions">
+        <button class="btn btn-sm btn-primary" id="btn-run-diag">🩺 Probar Conexión Completa</button>
+      </div>
+    </div>
+
+    <!-- Chips / Resumen de Estado -->
+    <div class="diag-status-grid">
+      <div class="diag-status-card" id="chip-php">
+        <span class="status-badge-title">Servidor PHP</span>
+        <span class="status-badge-val" id="val-php-status">Consultando...</span>
+      </div>
+      <div class="diag-status-card" id="chip-mysql">
+        <span class="status-badge-title">Base de Datos MySQL</span>
+        <span class="status-badge-val" id="val-mysql-status">Desconocido</span>
+      </div>
+      <div class="diag-status-card" id="chip-tables">
+        <span class="status-badge-title">Tablas en BD</span>
+        <span class="status-badge-val" id="val-tables-status">—</span>
+      </div>
+      <div class="diag-status-card" id="chip-latency">
+        <span class="status-badge-title">Latencia del Servidor</span>
+        <span class="status-badge-val" id="val-latency">— ms</span>
+      </div>
+    </div>
+
+    <!-- Mensaje de Alerta en caso de error de BD -->
+    <div class="diag-alert" id="diag-alert-box" style="display:none">
+      <span class="diag-alert-icon">⚠️</span>
+      <div class="diag-alert-content" id="diag-alert-text"></div>
+    </div>
+
+    <!-- Dos columnas: Simulador de envío ESP32 vs Inspector de lo recibido -->
+    <div class="diag-two-col">
+
+      <!-- COLUMNA 1: Simulador / Inyector de prueba -->
+      <div class="diag-subcard">
+        <h3>📡 Inyector de Lecturas de Prueba (Simulador ESP32)</h3>
+        <p class="diag-desc">Envía una solicitud POST real a <code>api/readings</code> para verificar que el servidor autentique y guarde la lectura en MySQL.</p>
+
+        <form id="test-send-form" class="diag-form" onsubmit="return false;">
+          <div class="diag-form-row">
+            <label>Sensor ID
+              <input type="text" id="test-sensor-id" value="ESP32-DEMO" required />
+            </label>
+            <label>X-API-Key
+              <input type="text" id="test-api-key" value="DEMO_KEY_1234" required />
+            </label>
+          </div>
+          <div class="diag-form-row three-col">
+            <label>Bx (Tesla)
+              <input type="number" id="test-bx" value="0.000035" step="any" />
+            </label>
+            <label>By (Tesla)
+              <input type="number" id="test-by" value="-0.000018" step="any" />
+            </label>
+            <label>Bz (Tesla)
+              <input type="number" id="test-bz" value="0.000042" step="any" />
+            </label>
+          </div>
+          <div class="diag-form-row">
+            <label>Temperatura (°C)
+              <input type="number" id="test-temp" value="25.4" step="any" />
+            </label>
+            <label>Campo Total |B| (opcional)
+              <input type="number" id="test-bt" placeholder="Calculado auto" step="any" />
+            </label>
+          </div>
+
+          <div class="diag-actions">
+            <button class="btn btn-success" id="btn-send-test-reading">🚀 Enviar Lectura de Prueba al Servidor</button>
+            <button class="btn btn-sm btn-outline" id="btn-fill-random">🎲 Valores Aleatorios</button>
+          </div>
+        </form>
+
+        <!-- Resultado del envío -->
+        <div class="diag-response-box" id="test-send-result" style="display:none;">
+          <div class="diag-res-header">
+            <span id="test-res-badge" class="badge">HTTP —</span>
+            <span id="test-res-time" class="diag-res-time">— ms</span>
+          </div>
+          <pre id="test-res-payload" class="code-preview">--</pre>
+        </div>
+      </div>
+
+      <!-- COLUMNA 2: Inspector de última lectura recibida en servidor -->
+      <div class="diag-subcard">
+        <div class="subcard-header">
+          <h3>📥 Última Lectura Recibida en Servidor</h3>
+          <button class="btn btn-sm btn-outline" id="btn-refresh-latest">🔄 Refrescar</button>
+        </div>
+        <p class="diag-desc">Información real almacenada en MySQL por el último ESP32 o prueba.</p>
+
+        <div id="latest-reading-container" class="latest-reading-box">
+          <div class="latest-reading-empty" id="latest-empty-msg">No se ha consultado o no hay lecturas en MySQL.</div>
+          <div id="latest-details" style="display:none;">
+            <div class="latest-grid">
+              <div><span class="label">ID Registro:</span> <strong id="lr-id">—</strong></div>
+              <div><span class="label">Sensor:</span> <strong id="lr-sensor">—</strong></div>
+              <div><span class="label">Hora Servidor:</span> <span id="lr-time">—</span></div>
+              <div><span class="label">Campo |B|:</span> <strong id="lr-b" class="text-accent">—</strong></div>
+              <div><span class="label">Equiv. µT:</span> <strong id="lr-ut" class="text-accent2">—</strong></div>
+              <div><span class="label">Vector [X,Y,Z]:</span> <span id="lr-vector">—</span></div>
+              <div><span class="label">Temperatura:</span> <span id="lr-temp">—</span></div>
+            </div>
+            <div class="raw-json-wrap">
+              <span class="label">Payload JSON Crudo recibido por el servidor (raw_json):</span>
+              <pre id="lr-raw" class="code-preview">--</pre>
+            </div>
+          </div>
+        </div>
+      </div>
+
+    </div>
+
+    <!-- Consola de Eventos y Errores de Conexión en Vivo -->
+    <div class="diag-console-wrap">
+      <div class="subcard-header">
+        <h4>📋 Registro de Eventos y Respuestas de Red (Consola en Vivo)</h4>
+        <button class="btn btn-sm btn-outline" id="btn-clear-console">🗑 Limpiar</button>
+      </div>
+      <div class="diag-console" id="diag-console">
+        <div class="console-entry info">[SISTEMA] MagnetMonitor inicializado. Esperando solicitudes...</div>
+      </div>
+    </div>
+  </section>
+
   <!-- ─── Referencia de leyes ─── -->
   <section class="card ref-section">
     <div class="card-header"><h2>📚 Referencia de leyes electromagnéticas</h2></div>
@@ -249,6 +383,8 @@
 <footer>
   <span>MagnetMonitor v2.0 · µ₀ = 4π × 10⁻⁷ T·m/A</span>
 </footer>
+
+<div id="toast-container" class="toast-container"></div>
 
 <script src="script.js"></script>
 </body>

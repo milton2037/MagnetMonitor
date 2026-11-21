@@ -1,66 +1,89 @@
 <?php
-// ══════════════════════════════════════════════════════════════
-// config/db.php  –  Conexión MySQL (PDO) con manejo de errores
-// ══════════════════════════════════════════════════════════════
+// ══════════════════════════════════════════════
+// config/db.php  –  Conexión MySQL (PDO) con
+//                   diagnóstico y manejo de errores
+// ══════════════════════════════════════════════
 
-define('DB_HOST', 'sql309.infinityfree.com'); // host MySQL de tu panel
+define('DB_HOST', 'sql309.infinityfree.com'); // cambia al host de tu panel
 define('DB_NAME', 'if0_43469375_magnet');      // nombre de la base de datos
 define('DB_USER', 'if0_43469375');             // usuario MySQL
 define('DB_PASS', 'TU_PASSWORD_AQUI');         // contraseña MySQL
 
+/**
+ * Obtiene la conexión PDO a MySQL con manejo explícito de errores
+ *
+ * @throws PDOException
+ */
 function getDB(): PDO {
     static $pdo = null;
     if ($pdo !== null) return $pdo;
 
-    $dsn = sprintf(
-        'mysql:host=%s;dbname=%s;charset=utf8mb4;connect_timeout=5',
-        DB_HOST, DB_NAME
-    );
+    // Validación preventiva de configuración
+    if (DB_PASS === 'TU_PASSWORD_AQUI' || empty(DB_PASS)) {
+        throw new PDOException(
+            "La contraseña de base de datos no está configurada en config/db.php. Reemplaza 'TU_PASSWORD_AQUI' por tu contraseña real del panel de hosting.",
+            1045
+        );
+    }
+
+    $dsn = sprintf('mysql:host=%s;dbname=%s;charset=utf8mb4', DB_HOST, DB_NAME);
 
     try {
         $pdo = new PDO($dsn, DB_USER, DB_PASS, [
             PDO::ATTR_ERRMODE            => PDO::ERRMODE_EXCEPTION,
             PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
             PDO::ATTR_EMULATE_PREPARES   => false,
-            PDO::ATTR_TIMEOUT            => 5,
+            PDO::ATTR_TIMEOUT            => 5, // 5 segundos de timeout
         ]);
+        return $pdo;
     } catch (PDOException $e) {
-        // Loguear el error real, no exponerlo
-        error_log('[MagnetMonitor] DB connection failed: ' . $e->getMessage());
-
-        // Código específico para diagnóstico
         $code = (int)$e->getCode();
-        $msg  = match (true) {
-            str_contains($e->getMessage(), 'Access denied')       => 'Acceso denegado a la base de datos. Verifica usuario/contraseña en config/db.php.',
-            str_contains($e->getMessage(), 'Unknown database')    => 'Base de datos no encontrada. Verifica DB_NAME en config/db.php.',
-            str_contains($e->getMessage(), 'php_network_getaddresses'),
-            str_contains($e->getMessage(), 'Connection refused'),
-            str_contains($e->getMessage(), 'connect_timeout')     => 'No se puede conectar al servidor MySQL. Verifica DB_HOST en config/db.php.',
-            default => 'Error de conexión a la base de datos.',
-        };
+        $msg  = $e->getMessage();
 
-        // Si ya tenemos _base.php cargado, usar json_error
-        if (function_exists('json_error')) {
-            json_error($msg, 503, ['db_code' => $code]);
+        // Diagnóstico amigable según el código de error MySQL
+        if ($code === 1045 || str_contains($msg, 'Access denied')) {
+            $friendly = "Acceso denegado a MySQL para el usuario '" . DB_USER . "'. Verifica DB_USER y DB_PASS en config/db.php.";
+        } elseif ($code === 1049 || str_contains($msg, 'Unknown database')) {
+            $friendly = "La base de datos '" . DB_NAME . "' no existe en el servidor '" . DB_HOST . "'. Créala en el panel de control de tu hosting.";
+        } elseif ($code === 2002 || str_contains($msg, 'Connection refused') || str_contains($msg, 'timed out')) {
+            $friendly = "No se pudo contactar el host MySQL '" . DB_HOST . "'. Verifica el nombre del servidor en tu panel de hosting.";
         } else {
-            http_response_code(503);
-            header('Content-Type: application/json; charset=utf-8');
-            echo json_encode(['ok' => false, 'error' => $msg, 'db_code' => $code]);
-            exit;
+            $friendly = "Error de conexión a MySQL: " . $msg;
         }
-    }
 
-    return $pdo;
+        throw new PDOException($friendly, $code, $e);
+    }
 }
 
-/** Prueba de conexión rápida, devuelve array con resultado */
-function testDB(): array {
+/**
+ * Prueba la conexión a la base de datos y retorna un reporte de estado
+ */
+function testDBConnection(): array {
+    $start = microtime(true);
     try {
-        $pdo = getDB();
-        $ver = $pdo->query('SELECT VERSION() AS v')->fetchColumn();
-        $db  = $pdo->query('SELECT DATABASE() AS d')->fetchColumn();
-        return ['ok' => true, 'mysql_version' => $ver, 'database' => $db];
-    } catch (PDOException $e) {
-        return ['ok' => false, 'error' => $e->getMessage(), 'code' => $e->getCode()];
+        $db = getDB();
+        $latencyMs = round((microtime(true) - $start) * 1000, 2);
+        $version   = $db->query('SELECT VERSION() AS v')->fetch()['v'] ?? 'Desconocida';
+
+        return [
+            'connected'  => true,
+            'host'       => DB_HOST,
+            'database'   => DB_NAME,
+            'user'       => DB_USER,
+            'version'    => $version,
+            'latency_ms' => $latencyMs,
+            'error'      => null
+        ];
+    } catch (Throwable $e) {
+        $latencyMs = round((microtime(true) - $start) * 1000, 2);
+        return [
+            'connected'  => false,
+            'host'       => DB_HOST,
+            'database'   => DB_NAME,
+            'user'       => DB_USER,
+            'version'    => null,
+            'latency_ms' => $latencyMs,
+            'error'      => $e->getMessage()
+        ];
     }
 }

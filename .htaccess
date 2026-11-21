@@ -8,14 +8,21 @@
     Deny from all
 </FilesMatch>
 
-# Ocultar directorio de config
+# Configuración de mod_rewrite para URLs limpias y router REST
 <IfModule mod_rewrite.c>
     RewriteEngine On
+    RewriteBase /
 
-    # Bloquear acceso directo a /config/
+    # 1. Bloquear acceso directo a la carpeta /config/
     RewriteRule ^config/ - [F,L]
 
-    # Redirigir / al index.html
+    # 2. Enrutar peticiones a /api/... al Front Controller api/index.php
+    # Si el archivo exacto existe en disco (ej: api/index.php o api/diagnostics.php directo), lo sirve
+    RewriteCond %{REQUEST_FILENAME} !-f
+    RewriteCond %{REQUEST_FILENAME} !-d
+    RewriteRule ^api/(.*)$ api/index.php [QSA,L]
+
+    # 3. Redirigir la raíz al index.html
     RewriteRule ^$ index.html [L]
 </IfModule>
 
@@ -27,9 +34,9 @@
 # Cache para assets estáticos
 <IfModule mod_expires.c>
     ExpiresActive On
-    ExpiresByType text/css             "access plus 1 week"
+    ExpiresByType text/css               "access plus 1 week"
     ExpiresByType application/javascript "access plus 1 week"
-    ExpiresByType image/png            "access plus 1 month"
+    ExpiresByType image/png              "access plus 1 month"
 </IfModule>
 
 # Cabeceras de seguridad

@@ -1,8 +1,8 @@
-/* ══════════════════════════════════════════
+/* ══════════════════════════════════════════════════════════════════
    MagnetMonitor v2 – script.js
-   Modo real: SSE + REST API del backend Node.js
-   Modo demo: simulación local como fallback
-   ══════════════════════════════════════════ */
+   Frontend interactivo: monitoreo, cálculo electromagnético,
+   diagnósticos del servidor y simulación.
+   ══════════════════════════════════════════════════════════════════ */
 
 // ─── Constantes físicas ─────────────────────────────────────────
 const MU_0 = 4 * Math.PI * 1e-7;
@@ -14,27 +14,123 @@ const API_BASE = (() => {
   const h = window.location.hostname;
   if (h === 'miltonguerrero.rf.gd') return 'https://miltonguerrero.rf.gd';
   if (h === 'localhost' || h === '127.0.0.1') return '';
-  return '';  // ajusta si usas otro host
+  return '';
 })();
 
-const READINGS_URL = `${API_BASE}/api/readings.php`;
-const SENSORS_URL  = `${API_BASE}/api/sensors.php`;
-const EXPORT_URL   = `${API_BASE}/api/export.php`;
+const READINGS_URL    = `${API_BASE}/api/readings`;
+const SENSORS_URL     = `${API_BASE}/api/sensors`;
+const EXPORT_URL      = `${API_BASE}/api/readings/export`;
+const DIAGNOSTICS_URL = `${API_BASE}/api/diagnostics`;
 
-// Polling cada 2 segundos (reemplaza SSE para hosting compartido PHP)
+// Polling cada 2 segundos para monitoreo en vivo
 const POLL_INTERVAL_MS = 2000;
 
 // ─── Estado global ───────────────────────────────────────────────
-let readings      = [];
-let simRunning    = false;
-let simInterval   = null;
-let pollInterval  = null;   // polling PHP API
+let readings       = [];
+let simRunning     = false;
+let simInterval    = null;
+let pollInterval   = null;
 let chartWindowSec = 60;
-let rowIndex      = 0;
-let useRealData   = false;
-let currentSensor = 'all';
-let lastReadingId = 0;      // para polling incremental (after_id)
-let eventSource   = null;   // mantenido por compatibilidad, no usado en PHP mode
+let rowIndex       = 0;
+let useRealData    = false;
+let currentSensor  = 'all';
+let lastReadingId  = 0;
+
+// ═══════════════════════════════════════════════════════════════════
+//  SISTEMA DE NOTIFICACIONES (TOASTS) Y CONSOLA DE DIAGNÓSTICO
+// ═══════════════════════════════════════════════════════════════════
+
+function showToast(message, type = 'info', duration = 4500) {
+  const container = document.getElementById('toast-container');
+  if (!container) return;
+
+  const toast = document.createElement('div');
+  toast.className = `toast toast-${type}`;
+
+  const icon = type === 'success' ? '✅' :
+               type === 'error'   ? '❌' :
+               type === 'warn'    ? '⚠️' : 'ℹ️';
+
+  toast.innerHTML = `<span>${icon}</span><span style="flex:1">${message}</span>`;
+  container.appendChild(toast);
+
+  setTimeout(() => {
+    toast.style.opacity = '0';
+    toast.style.transform = 'translateX(40px)';
+    setTimeout(() => toast.remove(), 250);
+  }, duration);
+}
+
+function logConnection(type, message, details = null) {
+  const consoleEl = document.getElementById('diag-console');
+  if (!consoleEl) return;
+
+  const now = new Date().toLocaleTimeString('es', { hour12: false });
+  const entry = document.createElement('div');
+  entry.className = `console-entry ${type}`;
+
+  let extra = '';
+  if (details) {
+    if (typeof details === 'object') {
+      try { extra = ' → ' + JSON.stringify(details); } catch (_) {}
+    } else {
+      extra = ` → ${details}`;
+    }
+  }
+
+  entry.textContent = `[${now}] [${type.toUpperCase()}] ${message}${extra}`;
+  consoleEl.insertBefore(entry, consoleEl.firstChild);
+
+  // Limitar historial a 80 líneas
+  while (consoleEl.children.length > 80) {
+    consoleEl.removeChild(consoleEl.lastChild);
+  }
+}
+
+/**
+ * Realiza fetch con captura de errores, timeout y parseo de HTML/JSON
+ */
+async function safeFetch(url, options = {}, timeoutMs = 6000) {
+  const controller = new AbortController();
+  const id = setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    const res = await fetch(url, { ...options, credentials: 'omit', credentials: 'same-origin', signal: controller.signal });
+    clearTimeout(id);
+
+    const contentType = res.headers.get('content-type') || '';
+    const text = await res.text();
+
+    let json = null;
+    if (contentType.includes('application/json') || (text.trim().startsWith('{') && text.trim().endsWith('}'))) {
+      try { json = JSON.parse(text); } catch (_) {}
+    }
+
+    if (!res.ok) {
+      const errMsg = json?.error || `Error HTTP ${res.status}: ${res.statusText}`;
+      const errDetail = json?.detail || (text.length < 250 ? text : 'Respuesta no JSON del servidor');
+      const err = new Error(errMsg);
+      err.status = res.status;
+      err.detail = errDetail;
+      err.json = json;
+      throw err;
+    }
+
+    if (!json) {
+      throw new Error(`El servidor respondió con contenido no JSON (${contentType || 'texto/html'}). Verifica que los archivos PHP estén subidos correctamente.`);
+    }
+
+    return json;
+  } catch (err) {
+    clearTimeout(id);
+    if (err.name === 'AbortError') {
+      const timeoutErr = new Error(`Tiempo de espera agotado (${timeoutMs / 1000}s) contactando a ${url}`);
+      timeoutErr.status = 408;
+      throw timeoutErr;
+    }
+    throw err;
+  }
+}
 
 // ═══════════════════════════════════════════════════════════════════
 //  CHART.JS
@@ -76,13 +172,13 @@ const chart = new Chart(ctx, {
       legend: { labels: { color: '#c9d1d9', font: { size: 11 } } },
       tooltip: {
         callbacks: {
-          label: c => ` ${fmt(c.raw)} T  (${(c.raw*1e6).toFixed(4)} µT)`
+          label: c => ` ${fmt(c.raw)} T  (${(c.raw * 1e6).toFixed(4)} µT)`
         }
       }
     },
     scales: {
       x: { ticks: { color: '#8b949e', maxTicksLimit: 8, maxRotation: 0 }, grid: { color: '#21262d' } },
-      y: { ticks: { color: '#8b949e', callback: v => fmt(v)+' T' },      grid: { color: '#21262d' } }
+      y: { ticks: { color: '#8b949e', callback: v => fmt(v) + ' T' },      grid: { color: '#21262d' } }
     }
   }
 });
@@ -92,17 +188,17 @@ const chart = new Chart(ctx, {
 // ═══════════════════════════════════════════════════════════════════
 const gaugeCtx = document.getElementById('gauge-canvas').getContext('2d');
 function drawGauge(fraction) {
-  const W=160, H=90, cx=W/2, cy=H-10, r=65;
-  gaugeCtx.clearRect(0,0,W,H);
-  gaugeCtx.beginPath(); gaugeCtx.arc(cx,cy,r,Math.PI,2*Math.PI);
-  gaugeCtx.lineWidth=14; gaugeCtx.strokeStyle='#21262d'; gaugeCtx.stroke();
-  const clamp = Math.min(1,Math.max(0,fraction));
-  const angle = Math.PI + clamp*Math.PI;
-  gaugeCtx.beginPath(); gaugeCtx.arc(cx,cy,r,Math.PI,angle);
-  gaugeCtx.strokeStyle = clamp<0.5?'#3fb950':clamp<0.8?'#d29922':'#f85149'; gaugeCtx.stroke();
-  const nx=cx+(r-7)*Math.cos(angle), ny=cy+(r-7)*Math.sin(angle);
-  gaugeCtx.beginPath(); gaugeCtx.moveTo(cx,cy); gaugeCtx.lineTo(nx,ny);
-  gaugeCtx.lineWidth=2.5; gaugeCtx.strokeStyle='#fff'; gaugeCtx.stroke();
+  const W = 160, H = 90, cx = W / 2, cy = H - 10, r = 65;
+  gaugeCtx.clearRect(0, 0, W, H);
+  gaugeCtx.beginPath(); gaugeCtx.arc(cx, cy, r, Math.PI, 2 * Math.PI);
+  gaugeCtx.lineWidth = 14; gaugeCtx.strokeStyle = '#21262d'; gaugeCtx.stroke();
+  const clamp = Math.min(1, Math.max(0, fraction));
+  const angle = Math.PI + clamp * Math.PI;
+  gaugeCtx.beginPath(); gaugeCtx.arc(cx, cy, r, Math.PI, angle);
+  gaugeCtx.strokeStyle = clamp < 0.5 ? '#3fb950' : clamp < 0.8 ? '#d29922' : '#f85149'; gaugeCtx.stroke();
+  const nx = cx + (r - 7) * Math.cos(angle), ny = cy + (r - 7) * Math.sin(angle);
+  gaugeCtx.beginPath(); gaugeCtx.moveTo(cx, cy); gaugeCtx.lineTo(nx, ny);
+  gaugeCtx.lineWidth = 2.5; gaugeCtx.strokeStyle = '#fff'; gaugeCtx.stroke();
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -111,17 +207,14 @@ function drawGauge(fraction) {
 function fmt(n) {
   if (n === null || n === undefined || isNaN(n)) return '—';
   const a = Math.abs(n);
-  if (a === 0)    return '0';
-  if (a >= 1)     return n.toFixed(4);
+  if (a === 0) return '0';
+  if (a >= 1) return n.toFixed(4);
   return n.toExponential(3);
 }
 function level(uT) {
-  if (uT < 60)  return { label:'Normal', cls:'level-low'    };
-  if (uT < 100) return { label:'Medio',  cls:'level-medium' };
-  return                { label:'Alto',   cls:'level-high'   };
-}
-function nowStr() {
-  return new Date().toLocaleTimeString('es', { hour12:false });
+  if (uT < 60)  return { label: 'Normal', cls: 'level-low'    };
+  if (uT < 100) return { label: 'Medio',  cls: 'level-medium' };
+  return               { label: 'Alto',   cls: 'level-high'   };
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -130,52 +223,49 @@ function nowStr() {
 function updateMetrics() {
   if (!readings.length) return;
   const vals = readings.map(r => r.value);
-  const cur  = vals[vals.length-1];
+  const cur  = vals[vals.length - 1];
   const mx   = Math.max(...vals);
   const mn   = Math.min(...vals);
-  const avg  = vals.reduce((a,b)=>a+b,0) / vals.length;
-  document.getElementById('val-current').textContent = fmt(cur)+' T';
-  document.getElementById('val-max').textContent     = fmt(mx) +' T';
-  document.getElementById('val-min').textContent     = fmt(mn) +' T';
-  document.getElementById('val-avg').textContent     = fmt(avg)+' T';
+  const avg  = vals.reduce((a, b) => a + b, 0) / vals.length;
+  document.getElementById('val-current').textContent = fmt(cur) + ' T';
+  document.getElementById('val-max').textContent     = fmt(mx)  + ' T';
+  document.getElementById('val-min').textContent     = fmt(mn)  + ' T';
+  document.getElementById('val-avg').textContent     = fmt(avg) + ' T';
   drawGauge(cur / 200e-6);
-  document.getElementById('gauge-label').textContent = (cur*1e6).toFixed(2)+' µT';
+  document.getElementById('gauge-label').textContent = (cur * 1e6).toFixed(2) + ' µT';
 }
 
 function updateChart() {
   const now    = Date.now();
   const cutoff = now - chartWindowSec * 1000;
   const slice  = readings.filter(r => r.time >= cutoff);
-  chart.data.labels              = slice.map(r => new Date(r.time).toLocaleTimeString('es',{hour12:false}));
-  chart.data.datasets[0].data   = slice.map(r => r.value);
-  chart.data.datasets[1].data   = slice.map(r => r.bx ?? null);
-  chart.data.datasets[2].data   = slice.map(r => r.by ?? null);
-  chart.data.datasets[3].data   = slice.map(r => r.bz ?? null);
+  chart.data.labels            = slice.map(r => new Date(r.time).toLocaleTimeString('es', { hour12: false }));
+  chart.data.datasets[0].data = slice.map(r => r.value);
+  chart.data.datasets[1].data = slice.map(r => r.bx ?? null);
+  chart.data.datasets[2].data = slice.map(r => r.by ?? null);
+  chart.data.datasets[3].data = slice.map(r => r.bz ?? null);
   chart.update();
 }
 
 function addLogRow(r) {
   rowIndex++;
-  const uT  = r.value * 1e6;
-  const lv  = level(uT);
+  const uT    = r.value * 1e6;
+  const lv    = level(uT);
   const tbody = document.getElementById('log-body');
-  const tr = document.createElement('tr');
+  const tr    = document.createElement('tr');
   tr.innerHTML = `
     <td>${rowIndex}</td>
     <td>${r.sensorId || '—'}</td>
-    <td>${new Date(r.time).toLocaleTimeString('es',{hour12:false})}</td>
+    <td>${new Date(r.time).toLocaleTimeString('es', { hour12: false })}</td>
     <td style="font-family:monospace">${fmt(r.value)}</td>
     <td style="font-family:monospace">${uT.toFixed(3)}</td>
     <td class="${lv.cls}">${lv.label}</td>
   `;
   tbody.insertBefore(tr, tbody.firstChild);
-  while (tbody.rows.length > 300) tbody.deleteRow(tbody.rows.length-1);
+  while (tbody.rows.length > 300) tbody.deleteRow(tbody.rows.length - 1);
   applyFilter();
 }
 
-// ═══════════════════════════════════════════════════════════════════
-//  INGESTAR UNA LECTURA (desde SSE, polling o simulador)
-// ═══════════════════════════════════════════════════════════════════
 function ingestReading(r) {
   readings.push(r);
   if (readings.length > 5000) readings.shift();
@@ -185,17 +275,18 @@ function ingestReading(r) {
 }
 
 // ═══════════════════════════════════════════════════════════════════
-//  POLLING  (reemplaza SSE – compatible con hosting PHP compartido)
+//  POLLING (Monitoreo en tiempo real desde MySQL)
 // ═══════════════════════════════════════════════════════════════════
 async function pollNewReadings() {
   if (!useRealData) return;
   try {
-    const qs  = new URLSearchParams({ limit: 50, after_id: lastReadingId });
+    const qs = new URLSearchParams({ limit: 50, after_id: lastReadingId });
     if (currentSensor !== 'all') qs.set('sensor_id', currentSensor);
-    const res  = await fetch(`${READINGS_URL}?${qs}`, { signal: AbortSignal.timeout(4000) });
-    const json = await res.json();
-    if (!json.ok || !json.data.rows.length) return;
 
+    const json = await safeFetch(`${READINGS_URL}?${qs}`, {}, 4000);
+    if (!json.ok || !json.data.rows || !json.data.rows.length) return;
+
+    let countNew = 0;
     json.data.rows.forEach(d => {
       lastReadingId = Math.max(lastReadingId, d.id);
       ingestReading({
@@ -206,8 +297,15 @@ async function pollNewReadings() {
         bz:       d.field_z,
         sensorId: d.sensor_id,
       });
+      countNew++;
     });
-  } catch (_) { /* silencioso – el servidor puede tardar */ }
+
+    if (countNew > 0) {
+      logConnection('info', `Polling: ${countNew} nueva(s) lectura(s) recibidas de MySQL.`);
+    }
+  } catch (err) {
+    logConnection('warn', 'Fallo temporal en polling de lecturas', err.message);
+  }
 }
 
 function startPolling() {
@@ -220,42 +318,53 @@ function stopPolling() {
 }
 
 // ═══════════════════════════════════════════════════════════════════
-//  CONEXIÓN INICIAL (carga historial + arranca polling)
+//  CARGAR HISTORIAL INICIAL DESDE LA API
 // ═══════════════════════════════════════════════════════════════════
 async function loadInitialReadings() {
   try {
+    logConnection('info', 'Contactando al servidor para cargar historial...');
     const qs = new URLSearchParams({ limit: 200 });
     if (currentSensor !== 'all') qs.set('sensor_id', currentSensor);
-    const res  = await fetch(`${READINGS_URL}?${qs}`, { signal: AbortSignal.timeout(5000) });
-    const json = await res.json();
-    if (!json.ok || !json.data.rows.length) return;
 
-    useRealData = true;
-    stopSim();
+    const json = await safeFetch(`${READINGS_URL}?${qs}`, {}, 5000);
 
-    readings = [];
-    lastReadingId = 0;
-    json.data.rows.forEach(d => {
-      lastReadingId = Math.max(lastReadingId, d.id);
-      readings.push({
-        time:     new Date(d.recorded_at).getTime(),
-        value:    d.field_tesla,
-        bx:       d.field_x,
-        by:       d.field_y,
-        bz:       d.field_z,
-        sensorId: d.sensor_id,
+    if (json.ok && json.data && json.data.rows && json.data.rows.length > 0) {
+      useRealData = true;
+      stopSim();
+
+      readings = [];
+      lastReadingId = 0;
+      json.data.rows.forEach(d => {
+        lastReadingId = Math.max(lastReadingId, d.id);
+        readings.push({
+          time:     new Date(d.recorded_at).getTime(),
+          value:    d.field_tesla,
+          bx:       d.field_x,
+          by:       d.field_y,
+          bz:       d.field_z,
+          sensorId: d.sensor_id,
+        });
       });
-    });
 
-    readings.forEach(r => addLogRow(r));
-    updateMetrics();
-    updateChart();
-    setStatus(true, 'En vivo · miltonguerrero.rf.gd', false);
+      readings.forEach(r => addLogRow(r));
+      updateMetrics();
+      updateChart();
+      setStatus(true, 'En vivo · Servidor Conectado', false);
+      logConnection('success', `Historial cargado: ${readings.length} lecturas desde MySQL.`);
+      showToast('Conectado exitosamente con MySQL. Monitoreo en vivo activado.', 'success');
 
-    loadSensors();
-    startPolling();   // 🔄 polling cada 2 s en lugar de SSE
+      loadSensors();
+      startPolling();
+    } else {
+      logConnection('warn', 'El servidor respondió pero no hay lecturas previas en la BD.');
+      setStatus(true, 'Conectado (Sin datos previos)', false);
+      loadSensors();
+      startPolling();
+      useRealData = true;
+      stopSim();
+    }
   } catch (err) {
-    console.info('[API] Backend PHP no disponible. Modo simulación.', err.message);
+    logConnection('error', 'No se pudo conectar con el backend PHP / MySQL', err.message);
     setStatus(true, 'Simulando (sin backend)', false);
     startSim();
   }
@@ -266,18 +375,22 @@ async function loadInitialReadings() {
 // ═══════════════════════════════════════════════════════════════════
 async function loadSensors() {
   try {
-    const res  = await fetch(SENSORS_URL, { signal: AbortSignal.timeout(3000) });
-    const json = await res.json();
+    const json = await safeFetch(SENSORS_URL, {}, 4000);
+    if (!json.ok || !Array.isArray(json.data)) return;
 
     const sel = document.getElementById('sensor-filter');
     sel.innerHTML = '<option value="all">Todos los sensores</option>';
-    json.data.forEach(s => {      const opt = document.createElement('option');
+    json.data.forEach(s => {
+      const opt = document.createElement('option');
       opt.value = s.sensor_id;
       opt.textContent = `${s.name} (${s.sensor_id})`;
       sel.appendChild(opt);
     });
     sel.style.display = '';
-  } catch (_) {}
+    logConnection('info', `Sensores cargados: ${json.data.length} dispositivo(s).`);
+  } catch (err) {
+    logConnection('warn', 'No se pudo listar los sensores', err.message);
+  }
 }
 
 document.getElementById('sensor-filter')?.addEventListener('change', e => {
@@ -287,7 +400,7 @@ document.getElementById('sensor-filter')?.addEventListener('change', e => {
 });
 
 // ═══════════════════════════════════════════════════════════════════
-//  SIMULADOR BROWNIANO (fallback sin hardware)
+//  SIMULADOR BROWNIANO (FALLBACK SIN HARDWARE)
 // ═══════════════════════════════════════════════════════════════════
 let simPhase = 0;
 let brownianB = 50e-6;
@@ -295,8 +408,8 @@ let brownianB = 50e-6;
 function simulateReading() {
   simPhase += 0.12;
   const sinC  = 20e-6 * Math.sin(simPhase);
-  const noise = (Math.random()-0.5) * 10e-6;
-  brownianB  += (Math.random()-0.5) * 2e-6;
+  const noise = (Math.random() - 0.5) * 10e-6;
+  brownianB  += (Math.random() - 0.5) * 2e-6;
   brownianB   = Math.max(5e-6, Math.min(200e-6, brownianB));
   const B     = brownianB + sinC + noise;
   const angle = simPhase;
@@ -311,6 +424,7 @@ function simulateReading() {
 }
 
 function startSim() {
+  if (simRunning) return;
   simInterval = setInterval(() => ingestReading(simulateReading()), 1000);
   simRunning  = true;
   setStatus(true, 'Simulando…', false);
@@ -318,22 +432,24 @@ function startSim() {
 }
 function stopSim() {
   clearInterval(simInterval);
+  simInterval = null;
   simRunning  = false;
   setStatus(false, 'Pausado', true);
   document.getElementById('toggle-sim-btn').textContent = '▶ Reanudar';
 }
 
 document.getElementById('toggle-sim-btn').addEventListener('click', () => {
-  // Backend PHP real → pausar/reanudar polling
   if (useRealData) {
     if (pollInterval) {
       stopPolling();
       setStatus(false, 'Pausado', true);
       document.getElementById('toggle-sim-btn').textContent = '▶ Reanudar';
+      logConnection('info', 'Monitoreo pausado por el usuario.');
     } else {
       startPolling();
-      setStatus(true, 'En vivo · miltonguerrero.rf.gd', false);
+      setStatus(true, 'En vivo · Servidor Conectado', false);
       document.getElementById('toggle-sim-btn').textContent = '⏸ Pausar';
+      logConnection('info', 'Monitoreo reanudado.');
     }
     return;
   }
@@ -341,7 +457,7 @@ document.getElementById('toggle-sim-btn').addEventListener('click', () => {
 });
 
 // ═══════════════════════════════════════════════════════════════════
-//  CONTROLES
+//  CONTROLES GENERALES
 // ═══════════════════════════════════════════════════════════════════
 function setStatus(running, label, paused) {
   const dot = document.getElementById('status-dot');
@@ -354,7 +470,7 @@ function clearChart() {
   chart.data.labels = [];
   chart.data.datasets.forEach(ds => ds.data = []);
   chart.update();
-  ['val-current','val-max','val-min','val-avg'].forEach(id => {
+  ['val-current', 'val-max', 'val-min', 'val-avg'].forEach(id => {
     document.getElementById(id).textContent = '— T';
   });
   drawGauge(0);
@@ -376,20 +492,19 @@ document.getElementById('clear-log-btn').addEventListener('click', () => {
 // ─── Exportar CSV ─────────────────────────────────────────────────
 document.getElementById('export-csv-btn').addEventListener('click', () => {
   if (useRealData) {
-    // Descargar desde backend PHP
     const qs = new URLSearchParams();
     if (currentSensor !== 'all') qs.set('sensor_id', currentSensor);
     window.open(`${EXPORT_URL}?${qs}`, '_blank');
+    logConnection('info', 'Descargando exportación CSV desde MySQL.');
     return;
   }
-  // Exportar datos simulados localmente
   const rows = ['timestamp,sensor_id,B_T,B_uT,Bx_T,By_T,Bz_T'];
   readings.forEach(r => {
-    rows.push(`${new Date(r.time).toISOString()},${r.sensorId||'SIM'},` +
-      `${r.value.toExponential(6)},${(r.value*1e6).toFixed(4)},` +
-      `${(r.bx??0).toExponential(4)},${(r.by??0).toExponential(4)},${(r.bz??0).toExponential(4)}`);
+    rows.push(`${new Date(r.time).toISOString()},${r.sensorId || 'SIM'},` +
+      `${r.value.toExponential(6)},${(r.value * 1e6).toFixed(4)},` +
+      `${(r.bx ?? 0).toExponential(4)},${(r.by ?? 0).toExponential(4)},${(r.bz ?? 0).toExponential(4)}`);
   });
-  const blob = new Blob([rows.join('\n')], { type:'text/csv' });
+  const blob = new Blob([rows.join('\n')], { type: 'text/csv' });
   Object.assign(document.createElement('a'), {
     href: URL.createObjectURL(blob),
     download: `magnetmonitor_${Date.now()}.csv`
@@ -404,6 +519,261 @@ function applyFilter() {
     tr.style.display = q && !tr.textContent.toLowerCase().includes(q) ? 'none' : '';
   });
 }
+
+// ═══════════════════════════════════════════════════════════════════
+//  PANEL DE PRUEBAS Y DIAGNÓSTICO EN VIVO
+// ═══════════════════════════════════════════════════════════════════
+
+/**
+ * Ejecuta el diagnóstico integral contra api/diagnostics.php
+ */
+async function runDiagnostics() {
+  logConnection('info', 'Iniciando diagnóstico completo del servidor...');
+  const t0 = performance.now();
+
+  const phpVal   = document.getElementById('val-php-status');
+  const mysqlVal = document.getElementById('val-mysql-status');
+  const tblVal   = document.getElementById('val-tables-status');
+  const latVal   = document.getElementById('val-latency');
+  const alertBox = document.getElementById('diag-alert-box');
+  const alertTxt = document.getElementById('diag-alert-text');
+
+  phpVal.textContent   = 'Comprobando...';
+  mysqlVal.textContent = 'Comprobando...';
+  tblVal.textContent   = 'Comprobando...';
+  latVal.textContent   = '...';
+  alertBox.style.display = 'none';
+
+  try {
+    const json = await safeFetch(DIAGNOSTICS_URL, {}, 6000);
+    const latency = Math.round(performance.now() - t0);
+    latVal.textContent = `${latency} ms`;
+
+    const d = json.data;
+
+    // 1. PHP
+    if (d.php) {
+      phpVal.textContent = `PHP v${d.php.version} ✓`;
+      phpVal.className   = 'status-badge-val ok';
+    }
+
+    // 2. MySQL
+    if (d.database && d.database.connected) {
+      mysqlVal.textContent = `Conectado (${d.database.database}) ✓`;
+      mysqlVal.className   = 'status-badge-val ok';
+    } else {
+      const err = d.database?.error || 'Sin conexión a MySQL';
+      mysqlVal.textContent = 'ERROR ✗';
+      mysqlVal.className   = 'status-badge-val err';
+      alertBox.style.display = 'flex';
+      alertTxt.innerHTML = `<strong>Fallo de Base de Datos:</strong> ${err}<br/><small>Verifica las credenciales en <code>config/db.php</code> o si el host de MySQL en InfinityFree es accesible.</small>`;
+      showToast('Error de conexión con MySQL: ' + err, 'error', 6000);
+      logConnection('error', 'Diagnóstico MySQL fallido', err);
+    }
+
+    // 3. Tablas
+    if (d.tables) {
+      const sOk = d.tables.sensors?.exists;
+      const rOk = d.tables.readings?.exists;
+      const sCnt = d.tables.sensors?.count ?? 0;
+      const rCnt = d.tables.readings?.count ?? 0;
+
+      if (sOk && rOk) {
+        tblVal.textContent = `sensors (${sCnt}) | readings (${rCnt}) ✓`;
+        tblVal.className   = 'status-badge-val ok';
+      } else {
+        tblVal.textContent = `Faltan tablas ✗`;
+        tblVal.className   = 'status-badge-val err';
+        alertBox.style.display = 'flex';
+        alertTxt.innerHTML = `<strong>Tablas faltantes en MySQL:</strong> Las tablas <code>sensors</code> o <code>readings</code> no existen.<br/><small>Importa el archivo <code>schema_hosting.sql</code> en phpMyAdmin.</small>`;
+        logConnection('error', 'Tablas requeridas no encontradas en MySQL');
+      }
+    }
+
+    // 4. Última lectura
+    renderLatestReading(d.latest_reading);
+
+    logConnection('success', `Diagnóstico finalizado en ${latency} ms. Estado general: ${json.meta?.status || 'OK'}`);
+    showToast('Diagnóstico del servidor completado con éxito.', 'success');
+
+  } catch (err) {
+    const latency = Math.round(performance.now() - t0);
+    latVal.textContent = `${latency} ms`;
+    phpVal.textContent = 'Inalcanzable ✗';
+    phpVal.className   = 'status-badge-val err';
+    mysqlVal.textContent = 'Desconocido';
+    mysqlVal.className   = 'status-badge-val err';
+
+    alertBox.style.display = 'flex';
+    alertTxt.innerHTML = `<strong>Error de conexión al servidor:</strong> ${err.message}<br/><small>${err.detail || 'Revisa que tu hosting esté activo y los archivos en htdocs/'}</small>`;
+
+    logConnection('error', 'Diagnóstico fallido', err.message);
+    showToast(`Error al conectar con ${DIAGNOSTICS_URL}: ${err.message}`, 'error', 6000);
+  }
+}
+
+/**
+ * Renderiza la última lectura recibida en el inspector de diagnóstico
+ */
+function renderLatestReading(lr) {
+  const emptyMsg = document.getElementById('latest-empty-msg');
+  const details  = document.getElementById('latest-details');
+
+  if (!lr) {
+    emptyMsg.style.display = 'block';
+    emptyMsg.textContent = 'Aún no hay ninguna lectura guardada en la base de datos MySQL.';
+    details.style.display = 'none';
+    return;
+  }
+
+  emptyMsg.style.display = 'none';
+  details.style.display  = 'block';
+
+  document.getElementById('lr-id').textContent     = `#${lr.id}`;
+  document.getElementById('lr-sensor').textContent = lr.sensor_id;
+  document.getElementById('lr-time').textContent   = lr.recorded_at;
+  document.getElementById('lr-b').textContent      = `${fmt(lr.field_tesla)} T`;
+  document.getElementById('lr-ut').textContent     = `${(lr.field_tesla * 1e6).toFixed(3)} µT`;
+  document.getElementById('lr-vector').textContent = `[${fmt(lr.field_x)}, ${fmt(lr.field_y)}, ${fmt(lr.field_z)}]`;
+  document.getElementById('lr-temp').textContent   = lr.temperature !== null ? `${lr.temperature} °C` : 'N/D';
+
+  const rawEl = document.getElementById('lr-raw');
+  try {
+    const obj = typeof lr.raw_json === 'string' ? JSON.parse(lr.raw_json) : lr.raw_json;
+    rawEl.textContent = JSON.stringify(obj, null, 2);
+  } catch (_) {
+    rawEl.textContent = lr.raw_json || 'Sin payload crudo';
+  }
+}
+
+/**
+ * Envía una lectura simulada al endpoint real api/readings
+ */
+async function sendTestReading() {
+  const sensorId = document.getElementById('test-sensor-id').value.trim();
+  const apiKey   = document.getElementById('test-api-key').value.trim();
+  const bx       = parseFloat(document.getElementById('test-bx').value);
+  const by       = parseFloat(document.getElementById('test-by').value);
+  const bz       = parseFloat(document.getElementById('test-bz').value);
+  const btInput  = parseFloat(document.getElementById('test-bt').value);
+  const temp     = parseFloat(document.getElementById('test-temp').value);
+
+  if (!sensorId) {
+    showToast('Debes ingresar un Sensor ID para la prueba.', 'warn');
+    return;
+  }
+  if (!apiKey) {
+    showToast('Debes ingresar la X-API-Key para la prueba.', 'warn');
+    return;
+  }
+
+  const payload = {
+    sensor_id: sensorId,
+    field_x: !isNaN(bx) ? bx : 0,
+    field_y: !isNaN(by) ? by : 0,
+    field_z: !isNaN(bz) ? bz : 0,
+  };
+
+  if (!isNaN(btInput)) {
+    payload.field_tesla = btInput;
+  }
+  if (!isNaN(temp)) {
+    payload.temperature = temp;
+  }
+
+  const resBox   = document.getElementById('test-send-result');
+  const badge    = document.getElementById('test-res-badge');
+  const timeEl   = document.getElementById('test-res-time');
+  const payloadEl= document.getElementById('test-res-payload');
+
+  resBox.style.display = 'block';
+  badge.textContent = 'Enviando...';
+  badge.className   = 'badge';
+  payloadEl.textContent = 'Esperando respuesta del servidor...';
+
+  logConnection('info', `Enviando lectura de prueba para '${sensorId}' a api/readings...`);
+  const t0 = performance.now();
+
+  try {
+    const res = await fetch(READINGS_URL, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-API-Key': apiKey,
+      },
+      body: JSON.stringify(payload),
+    });
+
+    const elapsed = Math.round(performance.now() - t0);
+    timeEl.textContent = `${elapsed} ms`;
+    badge.textContent = `HTTP ${res.status} ${res.statusText}`;
+
+    badge.className = (res.status >= 200 && res.status < 300)
+      ? 'badge badge-200'
+      : 'badge badge-400';
+
+    const text = await res.text();
+    let jsonResp = null;
+    try { jsonResp = JSON.parse(text); } catch (_) {}
+
+    if (jsonResp) {
+      payloadEl.textContent = JSON.stringify(jsonResp, null, 2);
+    } else {
+      payloadEl.textContent = text;
+    }
+
+    if (res.ok) {
+      logConnection('success', `Lectura de prueba ACEPTADA por el servidor (ID: ${jsonResp?.data?.id ?? 'N/D'})`, jsonResp);
+      showToast('¡Lectura de prueba guardada exitosamente en MySQL!', 'success');
+      // Refrescar inmediatamente el inspector de última lectura
+      runDiagnostics();
+    } else {
+      const errReason = jsonResp?.error || `HTTP ${res.status}`;
+      logConnection('error', `El servidor RECHAZÓ la lectura de prueba (${errReason})`, jsonResp?.detail || text);
+      showToast(`Servidor rechazó lectura (${errReason})`, 'error', 5000);
+    }
+  } catch (err) {
+    const elapsed = Math.round(performance.now() - t0);
+    timeEl.textContent = `${elapsed} ms`;
+    badge.textContent = 'ERROR DE RED';
+    badge.className = 'badge badge-500';
+    payloadEl.textContent = `Error: ${err.message}\nNo se pudo establecer conexión HTTP con ${READINGS_URL}.`;
+    logConnection('error', 'Fallo al enviar lectura de prueba', err.message);
+    showToast(`Error al enviar: ${err.message}`, 'error', 5000);
+  }
+}
+
+// ─── Listeners de diagnóstico ─────────────────────────────────────
+document.getElementById('btn-run-diag')?.addEventListener('click', runDiagnostics);
+
+document.getElementById('btn-refresh-latest')?.addEventListener('click', () => {
+  runDiagnostics();
+});
+
+document.getElementById('btn-open-diag')?.addEventListener('click', () => {
+  const sec = document.getElementById('diag-section');
+  if (sec) {
+    sec.scrollIntoView({ behavior: 'smooth' });
+    runDiagnostics();
+  }
+});
+
+document.getElementById('btn-send-test-reading')?.addEventListener('click', sendTestReading);
+
+document.getElementById('btn-fill-random')?.addEventListener('click', () => {
+  const rand = (min, max) => (Math.random() * (max - min) + min).toExponential(4);
+  document.getElementById('test-bx').value = rand(-5e-5, 5e-5);
+  document.getElementById('test-by').value = rand(-5e-5, 5e-5);
+  document.getElementById('test-bz').value = rand(-5e-5, 5e-5);
+  document.getElementById('test-temp').value = (20 + Math.random() * 12).toFixed(1);
+  document.getElementById('test-bt').value = '';
+  showToast('Valores aleatorios generados en el simulador.', 'info', 2000);
+});
+
+document.getElementById('btn-clear-console')?.addEventListener('click', () => {
+  const c = document.getElementById('diag-console');
+  if (c) c.innerHTML = '<div class="console-entry info">[SISTEMA] Consola limpiada por el usuario.</div>';
+});
 
 // ═══════════════════════════════════════════════════════════════════
 //  TABS DE LEYES
@@ -426,52 +796,64 @@ document.querySelectorAll('.tab').forEach(tab => {
 const v = id => parseFloat(document.getElementById(id).value);
 
 function biotSavart() {
-  const I=v('bs-I'), R=v('bs-R'), x=v('bs-x');
-  if ([I,R,x].some(isNaN)||R<=0) return { error:'R debe ser > 0' };
-  const B = (MU_0*I*R*R) / (2*Math.pow(R*R+x*x,1.5));
-  return { value:B, unit:'T', label:'Campo axial del lazo',
-    detail:`µ₀=${MU_0.toExponential(2)}, I=${I} A, R=${R} m, x=${x} m → B=${fmt(B)} T (${(B*1e6).toFixed(4)} µT)` };
+  const I = v('bs-I'), R = v('bs-R'), x = v('bs-x');
+  if ([I, R, x].some(isNaN) || R <= 0) return { error: 'R debe ser > 0' };
+  const B = (MU_0 * I * R * R) / (2 * Math.pow(R * R + x * x, 1.5));
+  return {
+    value: B, unit: 'T', label: 'Campo axial del lazo',
+    detail: `µ₀=${MU_0.toExponential(2)}, I=${I} A, R=${R} m, x=${x} m → B=${fmt(B)} T (${(B * 1e6).toFixed(4)} µT)`
+  };
 }
 function ampere() {
-  const I=v('amp-I'), r=v('amp-r');
-  if ([I,r].some(isNaN)||r<=0) return { error:'r debe ser > 0' };
-  const B = (MU_0*I)/(2*Math.PI*r);
-  return { value:B, unit:'T', label:'Campo a distancia r',
-    detail:`I=${I} A, r=${r} m → B=${fmt(B)} T (${(B*1e6).toFixed(4)} µT)` };
+  const I = v('amp-I'), r = v('amp-r');
+  if ([I, r].some(isNaN) || r <= 0) return { error: 'r debe ser > 0' };
+  const B = (MU_0 * I) / (2 * Math.PI * r);
+  return {
+    value: B, unit: 'T', label: 'Campo a distancia r',
+    detail: `I=${I} A, r=${r} m → B=${fmt(B)} T (${(B * 1e6).toFixed(4)} µT)`
+  };
 }
 function solenoid() {
-  const N=v('sol-N'), L=v('sol-L'), I=v('sol-I');
-  if ([N,L,I].some(isNaN)||L<=0) return { error:'L debe ser > 0' };
-  const B = MU_0*(N/L)*I;
-  return { value:B, unit:'T', label:'Campo interior de la solenoide',
-    detail:`N=${N}, L=${L} m, I=${I} A → n=${(N/L).toFixed(1)} /m → B=${fmt(B)} T (${(B*1e6).toFixed(4)} µT)` };
+  const N = v('sol-N'), L = v('sol-L'), I = v('sol-I');
+  if ([N, L, I].some(isNaN) || L <= 0) return { error: 'L debe ser > 0' };
+  const B = MU_0 * (N / L) * I;
+  return {
+    value: B, unit: 'T', label: 'Campo interior de la solenoide',
+    detail: `N=${N}, L=${L} m, I=${I} A → n=${(N / L).toFixed(1)} /m → B=${fmt(B)} T (${(B * 1e6).toFixed(4)} µT)`
+  };
 }
 function toroid() {
-  const N=v('tor-N'), r=v('tor-r'), I=v('tor-I');
-  if ([N,r,I].some(isNaN)||r<=0) return { error:'r debe ser > 0' };
-  const B = (MU_0*N*I)/(2*Math.PI*r);
-  return { value:B, unit:'T', label:'Campo interior del toroide',
-    detail:`N=${N}, r=${r} m, I=${I} A → B=${fmt(B)} T (${(B*1e6).toFixed(4)} µT)` };
+  const N = v('tor-N'), r = v('tor-r'), I = v('tor-I');
+  if ([N, r, I].some(isNaN) || r <= 0) return { error: 'r debe ser > 0' };
+  const B = (MU_0 * N * I) / (2 * Math.PI * r);
+  return {
+    value: B, unit: 'T', label: 'Campo interior del toroide',
+    detail: `N=${N}, r=${r} m, I=${I} A → B=${fmt(B)} T (${(B * 1e6).toFixed(4)} µT)`
+  };
 }
 function faraday() {
-  const B=v('far-B'), A=v('far-A'), theta=v('far-theta')*Math.PI/180;
-  const N=v('far-N'), dt=v('far-dt'), dB=v('far-dB');
-  if ([B,A,theta,N,dt,dB].some(isNaN)||dt===0) return { error:'Δt debe ser ≠ 0' };
-  const phi  = B*A*Math.cos(theta);
-  const phi2 = (B+dB)*A*Math.cos(theta);
-  const emf  = -N*(phi2-phi)/dt;
-  return { value:emf, unit:'V', label:'FEM inducida',
-    detail:`Φ₁=${phi.toExponential(3)} Wb, Φ₂=${phi2.toExponential(3)} Wb → ε=${fmt(emf)} V` };
+  const B = v('far-B'), A = v('far-A'), theta = v('far-theta') * Math.PI / 180;
+  const N = v('far-N'), dt = v('far-dt'), dB = v('far-dB');
+  if ([B, A, theta, N, dt, dB].some(isNaN) || dt === 0) return { error: 'Δt debe ser ≠ 0' };
+  const phi  = B * A * Math.cos(theta);
+  const phi2 = (B + dB) * A * Math.cos(theta);
+  const emf  = -N * (phi2 - phi) / dt;
+  return {
+    value: emf, unit: 'V', label: 'FEM inducida',
+    detail: `Φ₁=${phi.toExponential(3)} Wb, Φ₂=${phi2.toExponential(3)} Wb → ε=${fmt(emf)} V`
+  };
 }
 function lorentz() {
-  const q=v('lor-q'), vel=v('lor-v'), B=v('lor-B'), theta=v('lor-theta')*Math.PI/180;
-  if ([q,vel,B,theta].some(isNaN)) return { error:'Valores inválidos' };
-  const F = Math.abs(q)*vel*B*Math.sin(theta);
-  return { value:F, unit:'N', label:'Fuerza de Lorentz',
-    detail:`q=${q.toExponential(2)} C, v=${vel.toExponential(2)} m/s, B=${fmt(B)} T, θ=${v('lor-theta')}° → F=${F.toExponential(3)} N` };
+  const q = v('lor-q'), vel = v('lor-v'), B = v('lor-B'), theta = v('lor-theta') * Math.PI / 180;
+  if ([q, vel, B, theta].some(isNaN)) return { error: 'Valores inválidos' };
+  const F = Math.abs(q) * vel * B * Math.sin(theta);
+  return {
+    value: F, unit: 'N', label: 'Fuerza de Lorentz',
+    detail: `q=${q.toExponential(2)} C, v=${vel.toExponential(2)} m/s, B=${fmt(B)} T, θ=${v('lor-theta')}° → F=${F.toExponential(3)} N`
+  };
 }
 
-const calculators = { 'biot-savart':biotSavart, ampere, solenoid, toroid, faraday, lorentz };
+const calculators = { 'biot-savart': biotSavart, ampere, solenoid, toroid, faraday, lorentz };
 
 document.getElementById('calc-btn').addEventListener('click', () => {
   const res = calculators[currentLaw]?.();
@@ -492,10 +874,12 @@ document.getElementById('calc-btn').addEventListener('click', () => {
 });
 
 // ═══════════════════════════════════════════════════════════════════
-//  INICIO
+//  INICIALIZACIÓN
 // ═══════════════════════════════════════════════════════════════════
 drawGauge(0);
-// Arrancar simulación de placeholder mientras se contacta el backend
+// 1. Iniciar simulación temporal como visualizador inmediato
 startSim();
-// Intentar conectar al backend PHP; si responde, reemplaza la simulación
+// 2. Intentar cargar datos reales desde MySQL; si responde, apaga la simulación
 loadInitialReadings();
+// 3. Ejecutar diagnóstico de conectividad inicial silencioso en segundo plano
+setTimeout(runDiagnostics, 800);

@@ -16,9 +16,10 @@
 8. [Paso 4 — Registrar el sensor ESP32](#8-paso-4--registrar-el-sensor-esp32)
 9. [Paso 5 — Programar el ESP32](#9-paso-5--programar-el-esp32)
 10. [API REST — referencia completa](#10-api-rest--referencia-completa)
-11. [Leyes electromagnéticas implementadas](#11-leyes-electromagnéticas-implementadas)
-12. [Modo simulación (sin hardware)](#12-modo-simulación-sin-hardware)
-13. [Solución de problemas](#13-solución-de-problemas)
+11. [Panel de Pruebas y Diagnóstico en la Web](#11-panel-de-pruebas-y-diagnóstico-en-la-web)
+12. [Leyes electromagnéticas implementadas](#12-leyes-electromagnéticas-implementadas)
+13. [Modo simulación (sin hardware)](#13-modo-simulación-sin-hardware)
+14. [Solución de problemas](#14-solución-de-problemas)
 
 ---
 
@@ -84,6 +85,7 @@ MONITOR-MAGNETICO/
 │   ├── readings.php        # POST (ESP32) + GET (frontend)
 │   ├── sensors.php         # GET lista / POST registro
 │   ├── stats.php           # Estadísticas por sensor
+│   ├── diagnostics.php     # 🩺 Diagnóstico y prueba de recepción
 │   └── export.php          # Descarga CSV
 │
 └── esp32/
@@ -217,7 +219,7 @@ Debes ver:
 Ejecuta este comando **una sola vez** desde tu terminal (PowerShell, cmd o Linux):
 
 ```bash
-curl -X POST https://miltonguerrero.rf.gd/api/sensors.php \
+curl -X POST https://miltonguerrero.rf.gd/api/sensors/register \
   -H "Content-Type: application/json" \
   -H "X-API-Key: una_clave_larga_y_muy_secreta_aqui" \
   -d "{\"sensor_id\":\"ESP32-LAB1\",\"name\":\"Laboratorio 1\",\"location\":\"Sala A\",\"api_key\":\"MI_CLAVE_ESP32\"}"
@@ -226,7 +228,7 @@ curl -X POST https://miltonguerrero.rf.gd/api/sensors.php \
 **En PowerShell (Windows):**
 ```powershell
 $body = '{"sensor_id":"ESP32-LAB1","name":"Laboratorio 1","location":"Sala A","api_key":"MI_CLAVE_ESP32"}'
-Invoke-RestMethod -Uri "https://miltonguerrero.rf.gd/api/sensors.php" `
+Invoke-RestMethod -Uri "https://miltonguerrero.rf.gd/api/sensors/register" `
   -Method POST `
   -Headers @{"Content-Type"="application/json"; "X-API-Key"="una_clave_larga_y_muy_secreta_aqui"} `
   -Body $body
@@ -340,12 +342,131 @@ https://miltonguerrero.rf.gd
 
 ---
 
-### `POST /api/readings.php` — Enviar lectura (ESP32)
+### `POST /api/sensors/register` — Registrar un ESP32 (Admin)
+
+**Headers:**
+```
+Content-Type: application/json
+X-API-Key: {ADMIN_KEY de config/config.php}
+```
+
+**Body JSON:**
+```json
+{
+  "sensor_id": "ESP32-LAB1",
+  "name": "Laboratorio 1",
+  "location": "Sala A",
+  "firmware": "v2.5",
+  "api_key": "CLAVE_SECRETA_ESP32"
+}
+```
+
+**Respuesta 201:**
+```json
+{
+  "ok": true,
+  "data": {
+    "sensor_id": "ESP32-LAB1",
+    "message": "Sensor 'ESP32-LAB1' registrado exitosamente en la base de datos."
+  }
+}
+```
+
+---
+
+### `GET /api/sensors` — Listar dispositivos registrados
+
+```
+GET /api/sensors
+```
+
+**Respuesta 200:**
+```json
+{
+  "ok": true,
+  "data": [
+    {
+      "sensor_id": "ESP32-DEMO",
+      "name": "Sensor demo",
+      "location": "Laboratorio 1",
+      "active": 1,
+      "created_at": "2026-11-20 20:00:00"
+    }
+  ]
+}
+```
+
+---
+
+### `GET /api/sensors/{id}/stats` — Estadísticas de un sensor
+
+Calcula el total de mediciones acumuladas, promedio, máximo y mínimo en µT, temperatura promedio y última vez visto.
+
+```
+GET /api/sensors/ESP32-DEMO/stats
+```
+
+**Respuesta 200:**
+```json
+{
+  "ok": true,
+  "data": {
+    "sensor": {
+      "sensor_id": "ESP32-DEMO",
+      "name": "Sensor demo",
+      "location": "Laboratorio 1"
+    },
+    "stats": {
+      "total_readings": 1540,
+      "avg_uT": 51.45,
+      "max_uT": 88.12,
+      "min_uT": 23.04,
+      "avg_temp_c": 24.8,
+      "last_seen": "2026-11-21 08:50:00"
+    }
+  }
+}
+```
+
+---
+
+### `GET /api/sensors/{id}/latest` — Última medición de un sensor
+
+Obtiene la última medición registrada por un dispositivo específico en tiempo real.
+
+```
+GET /api/sensors/ESP32-DEMO/latest
+```
+
+**Respuesta 200:**
+```json
+{
+  "ok": true,
+  "data": {
+    "id": 1540,
+    "sensor_id": "ESP32-DEMO",
+    "field_tesla": 0.0000512,
+    "field_uT": 51.2,
+    "field_x": -0.0000312,
+    "field_y": 0.0000418,
+    "field_z": 0.0000198,
+    "temperature": 25.1,
+    "recorded_at": "2026-11-21 08:50:00",
+    "has_data": true,
+    "raw_json_parsed": { ... }
+  }
+}
+```
+
+---
+
+### `POST /api/readings` — Recibir medición del ESP32
 
 **Headers requeridos:**
 ```
 Content-Type: application/json
-X-API-Key: {api_key del sensor en BD}
+X-API-Key: {api_key del sensor en tabla sensors}
+User-Agent: ESP32-MagnetMonitor/2.5
 ```
 
 **Body JSON:**
@@ -361,123 +482,41 @@ X-API-Key: {api_key del sensor en BD}
 | `latitude` | float | ❌ | Coordenada GPS (opcional) |
 | `longitude` | float | ❌ | Coordenada GPS (opcional) |
 
-> ⚠️ Se requiere `field_tesla` **o** los tres componentes `field_x/y/z`. Si se omite `field_tesla`, el backend calcula √(Bx²+By²+Bz²).
+> ⚠️ Se requiere `field_tesla` **o** los tres componentes `field_x/y/z`. Si se omite `field_tesla`, el backend calcula automáticamente √(Bx²+By²+Bz²).
 
 **Respuesta 201:**
-```json
-{ "ok": true, "data": { "id": 42 } }
-```
-
----
-
-### `GET /api/readings.php` — Obtener lecturas (frontend)
-
-**Parámetros de consulta:**
-
-| Param | Tipo | Default | Descripción |
-|---|---|---|---|
-| `sensor_id` | string | — | Filtrar por sensor |
-| `limit` | int | 200 | Máximo de filas (máx 1000) |
-| `offset` | int | 0 | Paginación |
-| `from` | datetime | — | Fecha inicio `YYYY-MM-DD HH:MM:SS` |
-| `to` | datetime | — | Fecha fin |
-| `after_id` | int | — | Solo filas con id > N (polling incremental) |
-
-**Ejemplo:**
-```
-GET /api/readings.php?sensor_id=ESP32-LAB1&limit=100&after_id=500
-```
-
-**Respuesta 200:**
 ```json
 {
   "ok": true,
   "data": {
-    "count": 5,
-    "rows": [
-      {
-        "id": 501,
-        "sensor_id": "ESP32-LAB1",
-        "field_tesla": 0.0000512,
-        "field_x": -0.0000312,
-        "field_y": 0.0000418,
-        "field_z": 0.0000198,
-        "temperature": 24.5,
-        "recorded_at": "2026-11-20 20:00:01"
-      }
-    ]
+    "id": 1541,
+    "sensor_id": "ESP32-DEMO",
+    "field_tesla": 0.0000512,
+    "field_uT": 51.2,
+    "server_time": "2026-11-21 08:55:00",
+    "message": "Medición recibida e insertada exitosamente en MySQL."
   }
 }
 ```
 
 ---
 
-### `GET /api/sensors.php` — Listar sensores
+### `GET /api/readings` — Consultar histórico de mediciones
 
+**Parámetros de consulta:**
+
+| Param | Tipo | Default | Descripción |
+|---|---|---|---|
+| `sensor_id` | string | — | Filtrar por ID de sensor |
+| `limit` | int | 200 | Máximo de registros (máx 1000) |
+| `offset` | int | 0 | Paginación |
+| `from` | datetime | — | Fecha inicio `YYYY-MM-DD HH:MM:SS` |
+| `to` | datetime | — | Fecha fin `YYYY-MM-DD HH:MM:SS` |
+| `after_id` | int | — | Solo registros con id > N (polling incremental) |
+
+**Ejemplo:**
 ```
-GET /api/sensors.php
-```
-
-**Respuesta 200:**
-```json
-{
-  "ok": true,
-  "data": [
-    {
-      "sensor_id": "ESP32-LAB1",
-      "name": "Laboratorio 1",
-      "location": "Sala A",
-      "active": 1,
-      "created_at": "2026-11-18 10:00:00"
-    }
-  ]
-}
-```
-
----
-
-### `POST /api/sensors.php` — Registrar sensor (admin)
-
-**Headers:**
-```
-Content-Type: application/json
-X-API-Key: {ADMIN_KEY de config.php}
-```
-
-**Body:**
-```json
-{
-  "sensor_id": "ESP32-LAB2",
-  "name": "Laboratorio 2",
-  "location": "Sala B",
-  "api_key": "clave_secreta_del_sensor"
-}
-```
-
----
-
-### `GET /api/stats.php` — Estadísticas por sensor
-
-```
-GET /api/stats.php
-```
-
-**Respuesta 200:**
-```json
-{
-  "ok": true,
-  "data": [
-    {
-      "sensor_id": "ESP32-LAB1",
-      "sensor_name": "Laboratorio 1",
-      "total_readings": 3600,
-      "avg_uT": 51.23,
-      "max_uT": 89.44,
-      "min_uT": 22.10,
-      "last_seen": "2026-11-20 20:05:00"
-    }
-  ]
-}
+GET /api/readings?sensor_id=ESP32-DEMO&limit=100&after_id=1500
 ```
 
 ---
@@ -494,7 +533,69 @@ Descarga un archivo `.csv` con columnas:
 
 ---
 
-## 11. Leyes electromagnéticas implementadas
+### `GET /api/diagnostics.php` — Salud y diagnóstico del sistema
+
+Comprueba versión de PHP, conectividad y latencia de MySQL, existencia de tablas y devuelve la última lectura registrada en la base de datos.
+
+```
+GET /api/diagnostics.php
+```
+
+**Respuesta 200 (Saludable):**
+```json
+{
+  "ok": true,
+  "data": {
+    "timestamp": "2026-11-21 08:30:00",
+    "php": { "version": "8.2.0", "pdo_mysql": true },
+    "database": { "connected": true, "database": "if0_43469375_magnet", "latency_ms": 14.5 },
+    "tables": {
+      "sensors": { "exists": true, "count": 2 },
+      "readings": { "exists": true, "count": 1420 }
+    },
+    "latest_reading": {
+      "id": 1420,
+      "sensor_id": "ESP32-LAB1",
+      "field_tesla": 0.0000512,
+      "field_uT": 51.2,
+      "temperature": 25.4,
+      "recorded_at": "2026-11-21 08:29:58",
+      "raw_json_parsed": { ... }
+    }
+  },
+  "meta": { "status": "HEALTHY" }
+}
+```
+
+---
+
+### `POST /api/diagnostics.php` — Echo Test (Recepción en servidor)
+
+Permite enviar cualquier JSON para verificar qué está recibiendo el servidor exactamente (cabeceras, IP, longitud, JSON parseado) sin insertar en la base de datos.
+
+---
+
+## 11. Panel de Pruebas y Diagnóstico en la Web
+
+La aplicación web ahora incluye una sección dedicada **"🛠️ Panel de Pruebas & Diagnóstico del Servidor"**:
+
+1. **Prueba de Conexión en 1 Clic (`🩺 Probar Conexión Completa`)**:
+   - Diagnostica en vivo el servidor PHP, el acceso a MySQL, las tablas `sensors` y `readings` y la latencia en milisegundos.
+   - Si la base de datos falla o faltan credenciales, muestra un mensaje de alerta guiando a la solución exacta.
+
+2. **Inyector de Lecturas de Prueba (Simulador ESP32)**:
+   - Permite enviar una lectura POST real a `api/readings.php` directamente desde el navegador con un Sensor ID, API Key y valores Bx, By, Bz o B total.
+   - Muestra el código HTTP de respuesta en vivo (ej. 201 Created o 403 Forbidden si la clave es errónea) y el tiempo de respuesta.
+
+3. **Inspector de Última Lectura Recibida en Servidor**:
+   - Muestra la última medición almacenada en la base de datos MySQL por cualquier ESP32 o prueba (ID, Sensor, Fecha/Hora, B, µT, Vector X/Y/Z y el JSON crudo `raw_json`).
+
+4. **Consola de Eventos y Red en Tiempo Real**:
+   - Muestra cada llamada HTTP, respuestas del servidor y advertencias en una consola en vivo con timestamps.
+
+---
+
+## 12. Leyes electromagnéticas implementadas
 
 | Ley | Fórmula | Calcula |
 |---|---|---|
@@ -509,7 +610,7 @@ Constante usada: **µ₀ = 4π × 10⁻⁷ T·m/A**
 
 ---
 
-## 12. Modo simulación (sin hardware)
+## 13. Modo simulación (sin hardware)
 
 Si el backend PHP **no responde** (modo offline o durante desarrollo local), el frontend activa automáticamente un **simulador de señal** browniana + componente senoidal + ruido aleatorio. El monitor se ve exactamente igual que con datos reales.
 
@@ -517,7 +618,7 @@ Para forzar el modo simulación: abre `index.html` directamente como archivo loc
 
 ---
 
-## 13. Solución de problemas
+## 14. Solución de problemas
 
 ### El ESP32 recibe error HTTP 403
 - Verifica que el `sensor_id` y `api_key` del sketch coincidan exactamente con los registrados en la tabla `sensors`.

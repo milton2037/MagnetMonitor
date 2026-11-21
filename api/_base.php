@@ -1,128 +1,132 @@
 <?php
-// ══════════════════════════════════════════════════════════════
-// api/_base.php  –  Helpers comunes + manejo global de errores
-// ══════════════════════════════════════════════════════════════
+// ══════════════════════════════════════════════
+// api/_base.php  –  Helpers comunes y manejo
+//                   global de excepciones/errores
+// ══════════════════════════════════════════════
 require_once __DIR__ . '/../config/config.php';
 require_once __DIR__ . '/../config/db.php';
 
-// ── Registrar errores PHP en log (no exponerlos al cliente) ──
-error_reporting(E_ALL);
-ini_set('display_errors', '0');         // nunca mostrar al cliente
-ini_set('log_errors',     '1');
-ini_set('error_log', __DIR__ . '/../logs/php_errors.log');
-
-// ── Capturar errores fatales y devolverlos como JSON ─────────
-register_shutdown_function(function () {
-    $err = error_get_last();
-    if ($err && in_array($err['type'], [E_ERROR, E_PARSE, E_CORE_ERROR, E_COMPILE_ERROR])) {
-        if (!headers_sent()) {
-            http_response_code(500);
-            header('Content-Type: application/json; charset=utf-8');
-        }
-        echo json_encode([
-            'ok'    => false,
-            'error' => 'Error interno del servidor',
-            'debug' => (defined('APP_DEBUG') && APP_DEBUG)
-                       ? $err['message'] . ' en ' . $err['file'] . ':' . $err['line']
-                       : null,
-        ]);
-    }
-});
-
-// ── Excepción no capturada ────────────────────────────────────
-set_exception_handler(function (Throwable $e) {
-    if (!headers_sent()) {
-        http_response_code(500);
-        header('Content-Type: application/json; charset=utf-8');
-    }
-    error_log('[MagnetMonitor] Excepción: ' . $e->getMessage() . ' en ' . $e->getFile() . ':' . $e->getLine());
-    echo json_encode([
-        'ok'    => false,
-        'error' => 'Error interno del servidor',
-        'debug' => (defined('APP_DEBUG') && APP_DEBUG) ? $e->getMessage() : null,
-    ]);
-    exit;
-});
-
-// ── CORS ──────────────────────────────────────────────────────
+// ── CORS ──────────────────────────────────────
 header('Access-Control-Allow-Origin: '  . ALLOWED_ORIGIN);
 header('Access-Control-Allow-Methods: GET, POST, OPTIONS');
-header('Access-Control-Allow-Headers: Content-Type, X-API-Key');
+header('Access-Control-Allow-Headers: Content-Type, X-API-Key, User-Agent');
 if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
     http_response_code(204);
     exit;
 }
 
-// ── Helpers de respuesta ──────────────────────────────────────
-function json_ok(mixed $data, int $code = 200): never {
+// ── Manejo global de excepciones no capturadas ─────────────────
+set_exception_handler(function (Throwable $e) {
+    $code = $e->getCode();
+    $httpStatus = ($code >= 400 && $code < 600) ? (int)$code : 500;
+    json_error($e->getMessage(), $httpStatus, [
+        'type' => get_class($e),
+        'file' => basename($e->getFile()) . ':' . $e->getLine()
+    ]);
+});
+
+// ── Manejo de errores fatales / warnings de PHP ────────────────
+set_error_handler(function ($severity, $message, $file, $line) {
+    if (!(error_reporting() & $severity)) return false;
+    throw new ErrorException($message, 500, $severity, $file, $line);
+});
+
+// ── Helpers de respuesta JSON ─────────────────
+function json_ok(mixed $data, int $code = 200, array $meta = []): never {
     http_response_code($code);
     header('Content-Type: application/json; charset=utf-8');
-    echo json_encode([
-        'ok'        => true,
-        'timestamp' => date('c'),
-        'data'      => $data,
-    ], JSON_UNESCAPED_UNICODE | JSON_PARTIAL_OUTPUT_ON_ERROR);
+    $payload = ['ok' => true, 'data' => $data];
+    if (!empty($meta)) {
+        $payload['meta'] = $meta;
+    }
+    echo json_encode($payload, JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT);
     exit;
 }
 
-function json_error(string $msg, int $code = 400, ?array $details = null): never {
+function json_error(string $msg, int $code = 400, mixed $detail = null): never {
     http_response_code($code);
     header('Content-Type: application/json; charset=utf-8');
-    error_log("[MagnetMonitor] Error $code: $msg");
-    $payload = ['ok' => false, 'error' => $msg, 'timestamp' => date('c')];
-    if ($details !== null) $payload['details'] = $details;
-    echo json_encode($payload, JSON_UNESCAPED_UNICODE);
+    $payload = ['ok' => false, 'error' => $msg];
+    if ($detail !== null) {
+        $payload['detail'] = $detail;
+    }
+    echo json_encode($payload, JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT);
     exit;
 }
 
-// ── Leer body JSON con validación ─────────────────────────────
 function get_body(): array {
     $raw = file_get_contents('php://input');
-    if (!$raw) return [];
-    $data = json_decode($raw, true);
-    if (json_last_error() !== JSON_ERROR_NONE) {
-        json_error('JSON inválido: ' . json_last_error_msg(), 400);
+    if (empty(trim($raw))) {
+        return [];
     }
-    return $data ?? [];
+    $decoded = json_decode($raw, true);
+    if (json_last_error() !== JSON_ERROR_NONE) {
+        json_error(
+            'El cuerpo de la petición no es un JSON válido: ' . json_last_error_msg(),
+            400,
+            ['raw_input_sample' => substr($raw, 0, 200)]
+        );
+    }
+    return $decoded;
 }
 
-// ── Cabecera API Key ──────────────────────────────────────────
 function api_key(): string {
-    return trim($_SERVER['HTTP_X_API_KEY'] ?? '');
+    return trim($_SERVER['HTTP_X_API_KEY'] ?? $_SERVER['X_API_KEY'] ?? '');
 }
 
 function require_admin(): void {
     $key = api_key();
-    if (!$key)              json_error('Falta cabecera X-API-Key', 401);
-    if ($key !== ADMIN_KEY) json_error('Clave de administrador incorrecta', 403);
-}
-
-// ── Autenticación de sensor ───────────────────────────────────
-function auth_sensor(string $sensorId): void {
-    $key = api_key();
-    if (!$key)       json_error('Falta cabecera X-API-Key', 401);
-    if (!$sensorId)  json_error('Falta sensor_id en el body', 400);
-
-    try {
-        $db = getDB();
-        $st = $db->prepare(
-            'SELECT active FROM sensors WHERE sensor_id = ? AND api_key = ?'
-        );
-        $st->execute([$sensorId, $key]);
-        $row = $st->fetch();
-        if (!$row)             json_error('Sensor no encontrado o API key incorrecta', 403);
-        if (!$row['active'])   json_error('Sensor desactivado. Contacta al administrador.', 403);
-    } catch (PDOException $e) {
-        error_log('[MagnetMonitor] auth_sensor DB error: ' . $e->getMessage());
-        json_error('Error de base de datos al autenticar', 500);
+    if (empty($key)) {
+        json_error('Se requiere la cabecera X-API-Key con la clave de administrador.', 401);
+    }
+    if ($key !== ADMIN_KEY) {
+        json_error('Clave de administrador incorrecta.', 403);
     }
 }
 
-// ── Validar número en rango ───────────────────────────────────
-function validate_float(mixed $val, string $name, ?float $min = null, ?float $max = null): float {
-    if (!is_numeric($val)) json_error("El campo '$name' debe ser numérico", 422);
-    $f = (float)$val;
-    if ($min !== null && $f < $min) json_error("El campo '$name' debe ser ≥ $min", 422);
-    if ($max !== null && $f > $max) json_error("El campo '$name' debe ser ≤ $max", 422);
-    return $f;
+/**
+ * Verifica autenticación del sensor con validación y mensajes específicos
+ */
+function auth_sensor(string $sensorId): array {
+    $key = api_key();
+    if (empty($sensorId)) {
+        json_error('Falta el parámetro sensor_id en la petición.', 400);
+    }
+    if (empty($key)) {
+        json_error("Falta la cabecera X-API-Key para autenticar el sensor '{$sensorId}'.", 401);
+    }
+
+    try {
+        $db = getDB();
+        $st = $db->prepare('SELECT sensor_id, api_key, active, name FROM sensors WHERE sensor_id = ?');
+        $st->execute([$sensorId]);
+        $sensor = $st->fetch();
+
+        if (!$sensor) {
+            json_error(
+                "El sensor '{$sensorId}' no está registrado en la base de datos.",
+                403,
+                "Registra el sensor primero mediante POST /api/sensors.php o usa 'ESP32-DEMO' con clave 'DEMO_KEY_1234'."
+            );
+        }
+
+        if ((int)$sensor['active'] !== 1) {
+            json_error("El sensor '{$sensorId}' está marcado como INACTIVO en la base de datos.", 403);
+        }
+
+        if ($sensor['api_key'] !== $key) {
+            json_error("La clave X-API-Key proporcionada no coincide con la registrada para el sensor '{$sensorId}'.", 403);
+        }
+
+        return $sensor;
+    } catch (PDOException $e) {
+        if ($e->getCode() == 1146 || str_contains($e->getMessage(), "Table") || str_contains($e->getMessage(), "doesn't exist")) {
+            json_error(
+                "La tabla 'sensors' no existe en la base de datos MySQL. Debes importar el archivo 'schema_hosting.sql' en phpMyAdmin.",
+                500,
+                $e->getMessage()
+            );
+        }
+        throw $e;
+    }
 }

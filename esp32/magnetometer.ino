@@ -1,8 +1,11 @@
 // ══════════════════════════════════════════════════════════════════
-// MagnetMonitor ESP32 – magnetometer.ino
+// MagnetMonitor ESP32 – magnetometer.ino  (v2.5 REST)
 //
 // Sensor soportado: QMC5883L (compatible HMC5883L)
 //                   También adaptable a MPU9250, LSM303, etc.
+//
+// Protocolo: Solicitudes periódicas HTTP POST (sin MQTT persistente)
+//            100% compatible con InfinityFree y hosting compartido.
 //
 // Librerías requeridas (Gestor de bibliotecas de Arduino IDE):
 //   - QMC5883LCompass  by MPrograms
@@ -21,15 +24,16 @@ const char* WIFI_SSID     = "TU_RED_WIFI";
 const char* WIFI_PASSWORD = "TU_CLAVE_WIFI";
 
 // ─── Configuración del servidor ──────────────────────────────────
-const char* SERVER_URL    = "http://192.168.1.100:3000/api/readings";
-// Cambia la IP por la de tu PC donde corre el backend.
-// En producción usa un dominio con HTTPS.
+// En producción usa tu dominio (ej. https://miltonguerrero.rf.gd/api/readings)
+// O en red local con XAMPP (ej. http://192.168.1.100/MONITOR-MAGNETICO/api/readings)
+const char* SERVER_URL    = "https://miltonguerrero.rf.gd/api/readings";
 
-const char* SENSOR_ID     = "ESP32-LAB1";
+const char* SENSOR_ID     = "ESP32-DEMO";       // debe coincidir con la BD
 const char* API_KEY       = "DEMO_KEY_1234";   // debe coincidir con la BD
 
-// ─── Intervalo de muestreo ───────────────────────────────────────
-const uint32_t SAMPLE_INTERVAL_MS = 1000;   // 1 lectura por segundo
+// ─── Intervalo de muestreo (HTTP periódico) ──────────────────────
+// En InfinityFree 2000 ms (2 s) es el ritmo óptimo para evitar rate limits
+const uint32_t SAMPLE_INTERVAL_MS = 2000;
 
 // ─── Objeto del magnetómetro ─────────────────────────────────────
 QMC5883LCompass compass;
@@ -43,13 +47,13 @@ const int MAX_FAILS   = 5;      // reiniciar WiFi tras N fallos consecutivos
 void setup() {
   Serial.begin(115200);
   delay(500);
-  Serial.println("\n🧲  MagnetMonitor ESP32 iniciando…");
+  Serial.println("\n🧲  MagnetMonitor ESP32 v2.5 iniciando…");
 
   // Inicializar I²C y sensor
   Wire.begin(21, 22);           // SDA=21, SCL=22  (pines por defecto ESP32)
   compass.init();
   compass.setCalibration(-2000, 2000, -2000, 2000, -2000, 2000);
-  // ↑ Ajusta estos valores con tu calibración real
+  // ↑ Ajusta estos valores con tu calibración real girando el sensor
 
   // Conectar WiFi
   connectWiFi();
@@ -63,7 +67,7 @@ void loop() {
     readAndSend();
   }
 
-  // Reconexión automática WiFi
+  // Reconexión automática WiFi si se cae
   if (WiFi.status() != WL_CONNECTED) {
     Serial.println("⚠ WiFi desconectado. Reconectando…");
     connectWiFi();
@@ -74,21 +78,23 @@ void loop() {
 void connectWiFi() {
   WiFi.mode(WIFI_STA);
   WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
-  Serial.print("   Conectando a ");
+  Serial.print("   Conectando a WiFi ");
   Serial.print(WIFI_SSID);
 
   uint8_t tries = 0;
-  while (WiFi.status() != WL_CONNECTED && tries < 20) {
-    delay(500);
+  while (WiFi.status() != WL_CONNECTED && tries < 25) {
+    delay(400);
     Serial.print('.');
     tries++;
   }
 
   if (WiFi.status() == WL_CONNECTED) {
-    Serial.println("\n✅ WiFi conectado. IP: " + WiFi.localIP().toString());
+    Serial.println("\n✅ WiFi conectado exitosamente.");
+    Serial.print("   IP local: ");
+    Serial.println(WiFi.localIP());
     failCount = 0;
   } else {
-    Serial.println("\n❌ No se pudo conectar. Reintentando en el siguiente ciclo.");
+    Serial.println("\n❌ No se pudo conectar a WiFi. Reintentando en el siguiente ciclo.");
   }
 }
 
@@ -96,9 +102,9 @@ void connectWiFi() {
 void readAndSend() {
   // ── Leer magnetómetro ────────────────────────────────────────
   compass.read();
-  int   raw_x = compass.getX();
-  int   raw_y = compass.getY();
-  int   raw_z = compass.getZ();
+  int raw_x = compass.getX();
+  int raw_y = compass.getY();
+  int raw_z = compass.getZ();
 
   // Convertir unidades: QMC5883L entrega en mGauss → pasar a Tesla
   // 1 Gauss = 1e-4 T  →  1 mGauss = 1e-7 T
@@ -108,8 +114,8 @@ void readAndSend() {
 
   float Btotal = sqrt(Bx*Bx + By*By + Bz*Bz);
 
-  Serial.printf("B: %.4e T  (Bx=%.4e  By=%.4e  Bz=%.4e)\n",
-                Btotal, Bx, By, Bz);
+  Serial.printf("📊 B: %.4e T (%.2f µT) | Bx=%.2e By=%.2e Bz=%.2e\n",
+                Btotal, Btotal * 1e6, Bx, By, Bz);
 
   if (WiFi.status() != WL_CONNECTED) return;
 
@@ -120,28 +126,34 @@ void readAndSend() {
   doc["field_x"]     = Bx;
   doc["field_y"]     = By;
   doc["field_z"]     = Bz;
-  // doc["temperature"] = readTemp();   // descomenta si tienes sensor de temp
+  // doc["temperature"] = 24.5; // opcional
 
   String payload;
   serializeJson(doc, payload);
 
-  // ── Enviar HTTP POST ─────────────────────────────────────────
+  // ── Enviar HTTP POST al servidor REST ─────────────────────────
   HTTPClient http;
   http.begin(SERVER_URL);
   http.addHeader("Content-Type", "application/json");
   http.addHeader("X-API-Key",    API_KEY);
+  http.addHeader("User-Agent",   "ESP32-MagnetMonitor/2.5"); // Requerido para InfinityFree
   http.setTimeout(5000);
 
   int httpCode = http.POST(payload);
 
-  if (httpCode == 201) {
-    Serial.println("   ✅ Enviado correctamente.");
+  if (httpCode == 201 || httpCode == 200) {
+    Serial.printf("   ✅ POST OK [%d] -> Medición guardada en MySQL.\n", httpCode);
     failCount = 0;
   } else {
     failCount++;
+    String responseBody = http.getString();
     Serial.printf("   ❌ Error HTTP %d (fallo %d/%d)\n", httpCode, failCount, MAX_FAILS);
+    if (responseBody.length() > 0 && responseBody.length() < 200) {
+      Serial.printf("      Servidor: %s\n", responseBody.c_str());
+    }
+
     if (failCount >= MAX_FAILS) {
-      Serial.println("   🔄 Demasiados fallos. Reiniciando WiFi…");
+      Serial.println("   🔄 Demasiados fallos consecutivos. Reiniciando WiFi…");
       WiFi.disconnect();
       failCount = 0;
     }
@@ -149,10 +161,3 @@ void readAndSend() {
 
   http.end();
 }
-
-// ════════════════════════════════════════════════════════════════
-// OPCIONAL: si tu sensor tiene termómetro interno (ej. MPU9250)
-// float readTemp() {
-//   return compass.getTemperature(); // ajusta según librería
-// }
-// ════════════════════════════════════════════════════════════════
