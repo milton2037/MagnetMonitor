@@ -134,7 +134,6 @@ Verás creadas:
 |---|---|---|
 | `sensors` | Tabla | Sensores ESP32 autorizados |
 | `readings` | Tabla | Lecturas de campo magnético |
-| `v_sensor_stats` | Vista | Estadísticas por sensor |
 
 > Un sensor de demo (`ESP32-DEMO` / `DEMO_KEY_1234`) se inserta automáticamente para pruebas.
 
