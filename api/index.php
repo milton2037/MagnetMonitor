@@ -287,7 +287,7 @@ if ($method === 'GET' && $route === '/readings') {
     if ($afterId) { $where[] = 'id > ?';           $params[] = $afterId;}
 
     $sql = 'SELECT id, sensor_id, field_tesla, field_x, field_y, field_z,
-                   temperature, recorded_at
+                   temperature, recorded_at, raw_json
             FROM readings
             WHERE ' . implode(' AND ', $where) . '
             ORDER BY ' . ($afterId ? 'id ASC' : 'recorded_at DESC') . '

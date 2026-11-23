@@ -1,163 +1,258 @@
 // ══════════════════════════════════════════════════════════════════
-// MagnetMonitor ESP32 – magnetometer.ino  (v2.5 REST)
+// MagnetMonitor ESP32 – magnetometer.ino  (v3.3 Hotspot Móvil Estable)
 //
-// Sensor soportado: QMC5883L (compatible HMC5883L)
-//                   También adaptable a MPU9250, LSM303, etc.
+// ⚠️ ESTÁS EN MODO PRUEBA (SIN SENSOR FÍSICO):
+//    El ESP32 NO bloqueará el bus I2C. Arrancará al instante,
+//    conectará a tu WiFi y enviará mediciones simuladas de prueba
+//    cada 2 segundos a tu servidor para comprobar la conexión y MySQL.
 //
-// Protocolo: Solicitudes periódicas HTTP POST (sin MQTT persistente)
-//            100% compatible con InfinityFree y hosting compartido.
-//
-// Librerías requeridas (Gestor de bibliotecas de Arduino IDE):
-//   - QMC5883LCompass  by MPrograms
-//   - ArduinoJson      by Benoit Blanchon
-//   - WiFi             (incluida en ESP32 core)
-//   - HTTPClient       (incluida en ESP32 core)
+//    Cuando compres el sensor magnetómetro (QMC5883L/HMC5883L),
+//    solo debes cambiar USAR_SENSOR_FISICO a 'true'.
 // ══════════════════════════════════════════════════════════════════
 
 #include <WiFi.h>
 #include <HTTPClient.h>
+#include <WiFiClientSecure.h>
 #include <ArduinoJson.h>
-#include <QMC5883LCompass.h>
 
-// ─── Configuración WiFi ──────────────────────────────────────────
-const char* WIFI_SSID     = "TU_RED_WIFI";
-const char* WIFI_PASSWORD = "TU_CLAVE_WIFI";
+// ─── ¿TIENES EL SENSOR FÍSICO CONECTADO AHORA? ───────────────────
+// Como NO tienes el sensor conectado, déjalo en FALSE para evitar
+// que el ESP32 se congele intentando leer los pines I2C vacíos.
+#define USAR_SENSOR_FISICO  false
 
-// ─── Configuración del servidor ──────────────────────────────────
-// En producción usa tu dominio (ej. https://miltonguerrero.rf.gd/api/readings)
-// O en red local con XAMPP (ej. http://192.168.1.100/MONITOR-MAGNETICO/api/readings)
-const char* SERVER_URL    = "https://miltonguerrero.rf.gd/api/readings";
+#if USAR_SENSOR_FISICO
+  #include <Wire.h>
+  #include <QMC5883LCompass.h>
+  QMC5883LCompass compass;
+#endif
 
-const char* SENSOR_ID     = "ESP32-DEMO";       // debe coincidir con la BD
-const char* API_KEY       = "DEMO_KEY_1234";   // debe coincidir con la BD
+// ─── 1. CONFIGURACIÓN DE RED WIFI ────────────────────────────────
+const char* WIFI_SSID     = "Andres-3737-2G";              // ← Tu red WiFi conectada
+const char* WIFI_PASSWORD = "00A00MG2.5";                  // ← Tu contraseña WiFi
 
-// ─── Intervalo de muestreo (HTTP periódico) ──────────────────────
-// En InfinityFree 2000 ms (2 s) es el ritmo óptimo para evitar rate limits
-const uint32_t SAMPLE_INTERVAL_MS = 2000;
+// ─── 2. CONFIGURACIÓN DEL SERVIDOR (ALWAYSDATA) ──────────────────
+const char* SERVER_URL    = "https://magnetmonitor.alwaysdata.net/api/readings.php";
+const char* SENSOR_ID     = "ESP32-DEMO";        // Sensor registrado en la BD
+const char* API_KEY       = "DEMO_KEY_1234";     // Clave del sensor en la BD
 
-// ─── Objeto del magnetómetro ─────────────────────────────────────
-QMC5883LCompass compass;
+// ─── 3. INTERVALO DE TRANSMISIÓN ─────────────────────────────────
+const uint32_t SAMPLE_INTERVAL_MS = 3000;        // 1 paquete cada 3 segundos
 
-// ─── Estado interno ──────────────────────────────────────────────
-uint32_t lastSendTime = 0;
-int      failCount    = 0;
-const int MAX_FAILS   = 5;      // reiniciar WiFi tras N fallos consecutivos
+// ─── 4. PINES Y ESTADO ───────────────────────────────────────────
+#define LED_PIN 2   // LED azul integrado en la placa ESP32 DevKit
+
+uint32_t lastSendTime     = 0;
+uint32_t lastReconnectTry = 0;
+uint32_t packetCounter    = 0;
+int failCount             = 0;
+float testAngle           = 0.0f;
 
 // ════════════════════════════════════════════════════════════════
 void setup() {
+  pinMode(LED_PIN, OUTPUT);
+  digitalWrite(LED_PIN, HIGH);
+
   Serial.begin(115200);
-  delay(500);
-  Serial.println("\n🧲  MagnetMonitor ESP32 v2.5 iniciando…");
+  delay(1000);
 
-  // Inicializar I²C y sensor
-  Wire.begin(21, 22);           // SDA=21, SCL=22  (pines por defecto ESP32)
+  // Destello inicial de confirmación
+  digitalWrite(LED_PIN, LOW);
+  delay(150);
+  digitalWrite(LED_PIN, HIGH);
+  delay(150);
+  digitalWrite(LED_PIN, LOW);
+
+  Serial.println("\n");
+  Serial.println("==================================================");
+  Serial.println(">>> 🧲 MAGNETIC LAB - MAGNETOMETER ESP32        <<<");
+  Serial.println("==================================================");
+
+#if USAR_SENSOR_FISICO
+  Serial.println("🔌 Modo: Sensor Físico I2C (QMC5883L/HMC5883L)");
+  pinMode(21, INPUT_PULLUP);
+  pinMode(22, INPUT_PULLUP);
+  Wire.begin(21, 22);
   compass.init();
-  compass.setCalibration(-2000, 2000, -2000, 2000, -2000, 2000);
-  // ↑ Ajusta estos valores con tu calibración real girando el sensor
+#else
+  Serial.println("ℹ️  Modo: PRUEBA DE CONECTIVIDAD (Sin sensor físico)");
+  Serial.println("    Generando ondas de prueba matemáticas.");
+  Serial.println("    Destino: " + String(SERVER_URL));
+#endif
 
-  // Conectar WiFi
-  connectWiFi();
+  Serial.println("--------------------------------------------------");
+  Serial.printf("📡 Conectando a WiFi '%s'...\n", WIFI_SSID);
+
+  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+
+  int intentos = 0;
+  while (WiFi.status() != WL_CONNECTED && intentos < 30) {
+    delay(500);
+    Serial.print(".");
+    digitalWrite(LED_PIN, !digitalRead(LED_PIN)); // Parpadeo suave
+    intentos++;
+  }
+
+  digitalWrite(LED_PIN, LOW);
+
+  if (WiFi.status() == WL_CONNECTED) {
+    Serial.println("\n✅ WiFi conectado exitosamente!");
+    Serial.print("   → IP del ESP32: ");
+    Serial.println(WiFi.localIP());
+    Serial.print("   → Intensidad de señal (RSSI): ");
+    Serial.println(WiFi.RSSI());
+  } else {
+    Serial.println("\n❌ No fue posible conectar al WiFi todavía.");
+    Serial.println("   El ESP32 continuará intentando en segundo plano.");
+  }
+
+  Serial.println("==================================================\n");
 }
 
 // ════════════════════════════════════════════════════════════════
 void loop() {
-  uint32_t now = millis();
-  if (now - lastSendTime >= SAMPLE_INTERVAL_MS) {
-    lastSendTime = now;
-    readAndSend();
-  }
-
-  // Reconexión automática WiFi si se cae
-  if (WiFi.status() != WL_CONNECTED) {
-    Serial.println("⚠ WiFi desconectado. Reconectando…");
-    connectWiFi();
-  }
-}
-
-// ════════════════════════════════════════════════════════════════
-void connectWiFi() {
-  WiFi.mode(WIFI_STA);
-  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
-  Serial.print("   Conectando a WiFi ");
-  Serial.print(WIFI_SSID);
-
-  uint8_t tries = 0;
-  while (WiFi.status() != WL_CONNECTED && tries < 25) {
-    delay(400);
-    Serial.print('.');
-    tries++;
-  }
-
   if (WiFi.status() == WL_CONNECTED) {
-    Serial.println("\n✅ WiFi conectado exitosamente.");
-    Serial.print("   IP local: ");
-    Serial.println(WiFi.localIP());
-    failCount = 0;
+    readAndSend();
+    delay(SAMPLE_INTERVAL_MS);
   } else {
-    Serial.println("\n❌ No se pudo conectar a WiFi. Reintentando en el siguiente ciclo.");
+    Serial.println("⚠️ WiFi desconectado. Esperando que el ESP32 reconecte...");
+    delay(3000);
   }
 }
 
 // ════════════════════════════════════════════════════════════════
 void readAndSend() {
-  // ── Leer magnetómetro ────────────────────────────────────────
+  if (WiFi.status() != WL_CONNECTED) {
+    return;
+  }
+
+  packetCounter++;
+  float Bx = 0.0f;
+  float By = 0.0f;
+  float Bz = 0.0f;
+  float Btotal = 0.0f;
+  float temp = 24.5f;
+
+#if USAR_SENSOR_FISICO
   compass.read();
-  int raw_x = compass.getX();
-  int raw_y = compass.getY();
-  int raw_z = compass.getZ();
+  Bx = compass.getX() * 1e-7f;
+  By = compass.getY() * 1e-7f;
+  Bz = compass.getZ() * 1e-7f;
+  Btotal = sqrt(Bx * Bx + By * By + Bz * Bz);
+#else
+  // Generar datos senoidales suaves simulando campo terrestre (~30 a 60 uT)
+  testAngle += 0.20f;
+  Bx = (32.0f + 14.0f * sin(testAngle)) * 1e-6f;
+  By = (-18.0f + 10.0f * cos(testAngle * 0.8f)) * 1e-6f;
+  Bz = (40.0f + 8.0f * sin(testAngle * 1.4f)) * 1e-6f;
+  Btotal = sqrt(Bx * Bx + By * By + Bz * Bz);
+  temp = 24.0f + 2.0f * sin(testAngle * 0.1f);
+#endif
 
-  // Convertir unidades: QMC5883L entrega en mGauss → pasar a Tesla
-  // 1 Gauss = 1e-4 T  →  1 mGauss = 1e-7 T
-  float Bx = raw_x * 1e-7f;
-  float By = raw_y * 1e-7f;
-  float Bz = raw_z * 1e-7f;
+  // ── 1. IMPRIMIR EN MONITOR SERIAL ─────────────────────────────
+  Serial.println("\n--------------------------------------------------");
+  Serial.printf("📤 ENVIANDO PAQUETE #%lu A INFINITYFREE\n", packetCounter);
+  Serial.printf("   Campo |B|: %.2f µT (%.4e T)\n", Btotal * 1e6, Btotal);
+  Serial.printf("   Vector:    Bx=%.2f µT | By=%.2f µT | Bz=%.2f µT\n", Bx * 1e6, By * 1e6, Bz * 1e6);
+  Serial.printf("   Temp:      %.1f °C\n", temp);
 
-  float Btotal = sqrt(Bx*Bx + By*By + Bz*Bz);
-
-  Serial.printf("📊 B: %.4e T (%.2f µT) | Bx=%.2e By=%.2e Bz=%.2e\n",
-                Btotal, Btotal * 1e6, Bx, By, Bz);
-
-  if (WiFi.status() != WL_CONNECTED) return;
-
-  // ── Construir JSON ───────────────────────────────────────────
-  StaticJsonDocument<256> doc;
+  // ── 2. PREPARAR JSON ──────────────────────────────────────────
+  StaticJsonDocument<384> doc;
   doc["sensor_id"]   = SENSOR_ID;
   doc["field_tesla"] = Btotal;
   doc["field_x"]     = Bx;
   doc["field_y"]     = By;
   doc["field_z"]     = Bz;
-  // doc["temperature"] = 24.5; // opcional
+  doc["temperature"] = temp;
+  doc["packet_num"]  = packetCounter;
+  doc["hw_mode"]     = "PRUEBA_ESP32_SIN_SENSOR";
 
   String payload;
   serializeJson(doc, payload);
 
-  // ── Enviar HTTP POST al servidor REST ─────────────────────────
+  // ── 3. ENVIAR HTTP POST A INFINITYFREE ────────────────────────
   HTTPClient http;
-  http.begin(SERVER_URL);
+  String urlStr = String(SERVER_URL);
+  bool isHttps  = urlStr.startsWith("https://");
+
+  WiFiClient plainClient;
+  WiFiClientSecure secureClient;
+
+  if (isHttps) {
+    secureClient.setInsecure(); // Vital: el ESP32 no tiene el certificado raíz de Let's Encrypt/Cloudflare
+    secureClient.setTimeout(10);
+    http.begin(secureClient, SERVER_URL);
+  } else {
+    plainClient.setTimeout(10);
+    http.begin(plainClient, SERVER_URL);
+  }
+
   http.addHeader("Content-Type", "application/json");
   http.addHeader("X-API-Key",    API_KEY);
-  http.addHeader("User-Agent",   "ESP32-MagnetMonitor/2.5"); // Requerido para InfinityFree
-  http.setTimeout(5000);
+  http.addHeader("User-Agent",   "ESP32-MagnetMonitor/3.0");
+  http.setTimeout(10000);
 
+  uint32_t tStart = millis();
   int httpCode = http.POST(payload);
+  uint32_t elapsed = millis() - tStart;
 
-  if (httpCode == 201 || httpCode == 200) {
-    Serial.printf("   ✅ POST OK [%d] -> Medición guardada en MySQL.\n", httpCode);
+  // ── 4. EVALUAR RESPUESTA ──────────────────────────────────────
+  String resp = http.getString();
+
+  if (httpCode == 201) {
+    // ¡ÉXITO REAL! La base de datos confirmó la inserción con código 201 Created
+    digitalWrite(LED_PIN, HIGH);
+    delay(120);
+    digitalWrite(LED_PIN, LOW);
+
     failCount = 0;
+    Serial.printf("✅ LECTURA GUARDADA [201 Created] (%lu ms)\n", elapsed);
+
+    StaticJsonDocument<256> respDoc;
+    if (deserializeJson(respDoc, resp) == DeserializationError::Ok) {
+      long insertedId = respDoc["data"]["id"] | 0;
+      float fUt       = respDoc["data"]["field_uT"] | 0.0f;
+      Serial.printf("   → ID generado en MySQL: #%ld\n", insertedId);
+      Serial.printf("   → Campo guardado: %.2f µT\n", fUt);
+    }
+  } else if (httpCode == 200) {
+    // El servidor respondió 200 OK. Verificamos si es JSON o si devolvió HTML
+    StaticJsonDocument<384> respDoc;
+    DeserializationError err = deserializeJson(respDoc, resp);
+
+    if (err == DeserializationError::Ok && respDoc["ok"] == true) {
+      digitalWrite(LED_PIN, HIGH); delay(120); digitalWrite(LED_PIN, LOW);
+      long insertedId = respDoc["data"]["id"] | 0;
+      Serial.printf("✅ LECTURA GUARDADA [200 OK] (%lu ms) → ID #%ld\n", elapsed, insertedId);
+    } else {
+      // ⚠️ El servidor devolvió 200 OK pero NO es nuestra API (devolvió index.html o filtro de hosting)
+      Serial.printf("⚠️ ALERTA: Servidor devolvió 200 pero NO es la API de base de datos (%lu ms)\n", elapsed);
+      Serial.println("   Contenido recibido del servidor:");
+      Serial.println(resp.substring(0, 300));
+    }
   } else {
-    failCount++;
-    String responseBody = http.getString();
-    Serial.printf("   ❌ Error HTTP %d (fallo %d/%d)\n", httpCode, failCount, MAX_FAILS);
-    if (responseBody.length() > 0 && responseBody.length() < 200) {
-      Serial.printf("      Servidor: %s\n", responseBody.c_str());
+    // Parpadeo de error (3 veces)
+    for (int i = 0; i < 3; i++) {
+      digitalWrite(LED_PIN, HIGH); delay(70);
+      digitalWrite(LED_PIN, LOW); delay(70);
     }
 
-    if (failCount >= MAX_FAILS) {
-      Serial.println("   🔄 Demasiados fallos consecutivos. Reiniciando WiFi…");
-      WiFi.disconnect();
-      failCount = 0;
+    failCount++;
+    Serial.printf("❌ RESPUESTA SERVIDOR ERROR [%d] (%lu ms)\n", httpCode, elapsed);
+
+    if (httpCode == 403) {
+      Serial.println("   → Causa: Clave X-API-Key rechazada o sensor no registrado.");
+    } else if (httpCode == 500) {
+      Serial.println("   → Causa: Error 500 en MySQL. Revisa que config/db.php tenga la clave correcta de InfinityFree.");
+    } else if (httpCode < 0) {
+      Serial.printf("   → Causa de red/SSL: %s\n", http.errorToString(httpCode).c_str());
+    }
+
+    if (resp.length() > 0) {
+      Serial.print("   Detalle: ");
+      Serial.println(resp.substring(0, 300));
     }
   }
 
+  Serial.println("--------------------------------------------------");
   http.end();
 }

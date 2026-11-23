@@ -36,6 +36,12 @@ let useRealData    = false;
 let currentSensor  = 'all';
 let lastReadingId  = 0;
 
+// ─── Estado de Telemetría ESP32 ──────────────────────────────────
+let lastPacketTimestamp  = 0;
+let totalPacketsReceived = 0;
+let activeSensorName     = '—';
+let activeHwMode         = 'Esperando datos...';
+
 // ═══════════════════════════════════════════════════════════════════
 //  SISTEMA DE NOTIFICACIONES (TOASTS) Y CONSOLA DE DIAGNÓSTICO
 // ═══════════════════════════════════════════════════════════════════
@@ -277,7 +283,90 @@ function ingestReading(r) {
   updateMetrics();
   updateChart();
   addLogRow(r);
+
+  // Registrar telemetría del ESP32 si proviene de MySQL o prueba real
+  if (r.sensorId !== 'SIMULADOR') {
+    registerHardwarePulse(r);
+  }
 }
+
+function registerHardwarePulse(r) {
+  totalPacketsReceived++;
+  lastPacketTimestamp = Date.now();
+  activeSensorName = r.sensorId || 'ESP32';
+
+  // Identificar si viene en modo prueba ESP32 o con sensor físico
+  if (r.raw_json) {
+    let parsed = null;
+    if (typeof r.raw_json === 'string') {
+      try { parsed = JSON.parse(r.raw_json); } catch (_) {}
+    } else if (typeof r.raw_json === 'object') {
+      parsed = r.raw_json;
+    }
+    if (parsed && parsed.hw_mode) {
+      activeHwMode = parsed.hw_mode === 'PRUEBA_ESP32_SIN_SENSOR'
+        ? 'Prueba ESP32 (Sintético sin sensor)'
+        : 'Sensor Físico QMC5883L';
+    } else {
+      activeHwMode = 'ESP32 Conectado';
+    }
+  }
+
+  // Destello en el LED virtual de la interfaz web
+  const led = document.getElementById('esp-virtual-led');
+  const ledTxt = document.getElementById('esp-virtual-led-text');
+  if (led) {
+    led.classList.add('flash');
+    if (ledTxt) ledTxt.textContent = '¡Paquete entrante!';
+    setTimeout(() => {
+      led.classList.remove('flash');
+      if (ledTxt) ledTxt.textContent = 'Activo';
+    }, 280);
+  }
+
+  updateHardwareTelemetryUI();
+}
+
+function updateHardwareTelemetryUI() {
+  const badge     = document.getElementById('esp-status-badge');
+  const badgeText = document.getElementById('esp-status-text');
+  const lastSeen  = document.getElementById('esp-last-seen');
+  const sensorEl  = document.getElementById('esp-active-sensor');
+  const countEl   = document.getElementById('esp-packet-count');
+  const modeEl    = document.getElementById('esp-mode-label');
+
+  if (!badge) return;
+
+  if (sensorEl) sensorEl.textContent = activeSensorName;
+  if (countEl)  countEl.textContent  = totalPacketsReceived;
+  if (modeEl)   modeEl.textContent   = activeHwMode;
+
+  if (lastPacketTimestamp === 0) {
+    badge.className = 'esp-status-badge disconnected';
+    badgeText.textContent = 'ESP32 SIN TRANSMISIÓN';
+    if (lastSeen) lastSeen.textContent = 'Esperando primera transmisión del microcontrolador...';
+    return;
+  }
+
+  const elapsedSec = Math.floor((Date.now() - lastPacketTimestamp) / 1000);
+
+  if (elapsedSec <= 5) {
+    badge.className = 'esp-status-badge online';
+    badgeText.textContent = 'ESP32 EN LÍNEA 🟢';
+    if (lastSeen) lastSeen.textContent = `Recibido hace ${elapsedSec}s (${new Date(lastPacketTimestamp).toLocaleTimeString('es')})`;
+  } else if (elapsedSec <= 15) {
+    badge.className = 'esp-status-badge idle';
+    badgeText.textContent = 'ESP32 EN ESPERA 🟡';
+    if (lastSeen) lastSeen.textContent = `Última señal hace ${elapsedSec}s (esperando siguiente paquete)`;
+  } else {
+    badge.className = 'esp-status-badge disconnected';
+    badgeText.textContent = 'ESP32 DESCONECTADO ⚪';
+    if (lastSeen) lastSeen.textContent = `Sin transmisiones hace ${elapsedSec}s`;
+  }
+}
+
+// Timer para actualizar el contador de segundos transcurridos cada segundo
+setInterval(updateHardwareTelemetryUI, 1000);
 
 // ═══════════════════════════════════════════════════════════════════
 //  POLLING (Monitoreo en tiempo real desde MySQL)
@@ -301,6 +390,7 @@ async function pollNewReadings() {
         by:       d.field_y,
         bz:       d.field_z,
         sensorId: d.sensor_id,
+        raw_json: d.raw_json,
       });
       countNew++;
     });
@@ -348,6 +438,7 @@ async function loadInitialReadings() {
           by:       d.field_y,
           bz:       d.field_z,
           sensorId: d.sensor_id,
+          raw_json: d.raw_json,
         });
       });
 

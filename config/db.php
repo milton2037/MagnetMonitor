@@ -1,20 +1,20 @@
 <?php
 // ══════════════════════════════════════════════
-// config/db.php  –  Conexión MySQL (PDO) con
-//                   diagnóstico y manejo de errores
+// config/db.php  –  Conexión MySQL Alwaysdata (PDO)
 // ══════════════════════════════════════════════
 
-// 1. Servidor MySQL asignado por InfinityFree (Panel -> MySQL Details -> MySQL Hostname)
-// Ejemplos comunes: sql105.infinityfree.com, sql202.infinityfree.com, sql309.infinityfree.com
-define('DB_HOST', 'sql309.infinityfree.com'); // ← Cambia si tu panel muestra otro hostname
+// 1. Servidor MySQL en Alwaysdata
+// En Alwaysdata suele ser: mysql-[tu_cuenta].alwaysdata.net
+define('DB_HOST', 'mysql-magnetmonitor.alwaysdata.net');
 
-// 2. Nombre de tu base de datos (según tu panel de InfinityFree)
-define('DB_NAME', 'if0_43494190_magnet');
+// 2. Nombre de tu base de datos creada en Alwaysdata
+// Formato: [cuenta]_[nombre]  Ej: magnetmonitor_magnet
+define('DB_NAME', 'magnetmonitor_magnet');
 
-// 3. Usuario de tu cuenta de InfinityFree
-define('DB_USER', 'if0_43494190');
+// 3. Usuario de la base de datos creado en Alwaysdata
+define('DB_USER', 'magnetmonitor');
 
-// 4. Contraseña de tu cuenta de InfinityFree (la misma de vPanel / FTP)
+// 4. Contraseña que le asignaste al usuario en Alwaysdata
 define('DB_PASS', 'TU_PASSWORD_AQUI');
 
 /**
@@ -26,10 +26,9 @@ function getDB(): PDO {
     static $pdo = null;
     if ($pdo !== null) return $pdo;
 
-    // Validación preventiva de configuración
     if (DB_PASS === 'TU_PASSWORD_AQUI' || trim(DB_PASS) === '') {
         throw new PDOException(
-            "La contraseña de MySQL no está configurada en config/db.php. Debes reemplazar 'TU_PASSWORD_AQUI' por la contraseña de tu cuenta de InfinityFree (la misma que usas para el panel de control o FTP).",
+            "Debes configurar la contraseña de MySQL en config/db.php.",
             1045
         );
     }
@@ -49,11 +48,11 @@ function getDB(): PDO {
         $msg  = $e->getMessage();
 
         if ($code === 1045 || str_contains($msg, 'Access denied')) {
-            $friendly = "Acceso denegado a MySQL para el usuario '" . DB_USER . "'. Verifica DB_PASS en config/db.php (debe ser la contraseña de tu cuenta de InfinityFree).";
+            $friendly = "Acceso denegado para el usuario '" . DB_USER . "'. Verifica usuario y contraseña en config/db.php.";
         } elseif ($code === 1049 || str_contains($msg, 'Unknown database')) {
-            $friendly = "La base de datos '" . DB_NAME . "' no existe en '" . DB_HOST . "'. Verifica el nombre en tu panel de InfinityFree.";
+            $friendly = "La base de datos '" . DB_NAME . "' no existe. Verifica el nombre en Alwaysdata.";
         } elseif ($code === 2002 || str_contains($msg, 'Connection refused') || str_contains($msg, 'timed out')) {
-            $friendly = "No se pudo contactar al servidor MySQL '" . DB_HOST . "'. Ve a tu panel de InfinityFree -> 'MySQL Details' y copia el 'MySQL Hostname' exacto asignado a tu cuenta.";
+            $friendly = "No se pudo contactar al servidor MySQL '" . DB_HOST . "'.";
         } else {
             $friendly = "Error de conexión a MySQL: " . $msg;
         }
@@ -81,16 +80,16 @@ function testDBConnection(): array {
             'latency_ms' => $latencyMs,
             'error'      => null
         ];
-    } catch (Throwable $e) {
-        $latencyMs = round((microtime(true) - $start) * 1000, 2);
+    } catch (PDOException $e) {
         return [
             'connected'  => false,
             'host'       => DB_HOST,
             'database'   => DB_NAME,
             'user'       => DB_USER,
             'version'    => null,
-            'latency_ms' => $latencyMs,
-            'error'      => $e->getMessage()
+            'latency_ms' => null,
+            'error'      => $e->getMessage(),
+            'error_code' => $e->getCode()
         ];
     }
 }

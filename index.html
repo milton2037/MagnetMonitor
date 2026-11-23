@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Monitor de Campo Magnético</title>
-  <link rel="stylesheet" href="style.css?v=3.0" />
+  <link rel="stylesheet" href="style.css?v=3.1" />
   <!-- Chart.js via CDN -->
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
 </head>
@@ -61,6 +61,39 @@
       <div class="metric-info">
         <span class="metric-label">Promedio</span>
         <span class="metric-value" id="val-avg">— T</span>
+      </div>
+    </div>
+  </section>
+
+  <!-- ─── Banner de Telemetría ESP32 en Vivo ─── -->
+  <section class="card esp-telemetry-banner" id="esp-telemetry-banner">
+    <div class="esp-telemetry-header">
+      <div class="esp-status-badge disconnected" id="esp-status-badge">
+        <span class="esp-status-dot" id="esp-status-dot"></span>
+        <span id="esp-status-text">ESP32 SIN TRANSMISIÓN</span>
+      </div>
+      <div class="esp-last-seen" id="esp-last-seen">Esperando primera transmisión...</div>
+    </div>
+
+    <div class="esp-telemetry-grid">
+      <div class="esp-stat-box">
+        <span class="stat-title">Dispositivo Activo</span>
+        <span class="stat-val" id="esp-active-sensor">—</span>
+      </div>
+      <div class="esp-stat-box">
+        <span class="stat-title">Lecturas Recibidas</span>
+        <span class="stat-val text-accent" id="esp-packet-count">0</span>
+      </div>
+      <div class="esp-stat-box">
+        <span class="stat-title">Modo de Hardware</span>
+        <span class="stat-val" id="esp-mode-label">Esperando datos...</span>
+      </div>
+      <div class="esp-stat-box">
+        <span class="stat-title">Pulso de Transmisión</span>
+        <div class="esp-pulse-indicator">
+          <span class="virtual-led" id="esp-virtual-led"></span>
+          <span id="esp-virtual-led-text">Inactivo</span>
+        </div>
       </div>
     </div>
   </section>
@@ -387,6 +420,6 @@
 
 <div id="toast-container" class="toast-container"></div>
 
-<script src="script.js?v=3.0"></script>
+<script src="script.js?v=3.1"></script>
 </body>
 </html>

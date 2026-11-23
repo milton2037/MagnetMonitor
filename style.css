@@ -117,6 +117,113 @@ main {
 }
 .card-header h2 { font-size: 1rem; }
 
+/* ── Banner de Telemetría ESP32 ── */
+.esp-telemetry-banner {
+  background: linear-gradient(180deg, #161d27 0%, #11161d 100%);
+  border: 1px solid #2d3846;
+  border-left: 4px solid #388bfd;
+  padding: 14px 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.esp-telemetry-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+.esp-status-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 12px;
+  border-radius: 20px;
+  font-size: .82rem;
+  font-weight: 700;
+  letter-spacing: .5px;
+  text-transform: uppercase;
+}
+.esp-status-badge.online {
+  background: rgba(63, 185, 80, 0.15);
+  border: 1px solid var(--accent2);
+  color: var(--accent2);
+}
+.esp-status-badge.idle {
+  background: rgba(210, 153, 34, 0.15);
+  border: 1px solid var(--warn);
+  color: var(--warn);
+}
+.esp-status-badge.disconnected {
+  background: rgba(139, 148, 158, 0.12);
+  border: 1px solid var(--border);
+  color: var(--text-dim);
+}
+
+.esp-status-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: currentColor;
+}
+.esp-status-badge.online .esp-status-dot {
+  box-shadow: 0 0 10px var(--accent2);
+  animation: pulse 1.2s infinite;
+}
+
+.esp-last-seen {
+  font-size: .78rem;
+  color: var(--text-dim);
+  font-family: monospace;
+}
+
+.esp-telemetry-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+  gap: 10px;
+}
+.esp-stat-box {
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.esp-stat-box .stat-title {
+  font-size: .72rem;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: .4px;
+}
+.esp-stat-box .stat-val {
+  font-size: .95rem;
+  font-weight: 600;
+  font-family: monospace;
+  color: var(--text);
+}
+
+.esp-pulse-indicator {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: .8rem;
+  color: var(--text-dim);
+}
+.virtual-led {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: #30363d;
+  transition: background .15s, box-shadow .15s;
+}
+.virtual-led.flash {
+  background: #58a6ff;
+  box-shadow: 0 0 14px #58a6ff, 0 0 24px #388bfd;
+}
+
 /* ── Chart ── */
 .chart-section { }
 .chart-controls {
